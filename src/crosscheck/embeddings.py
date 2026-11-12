@@ -59,7 +59,7 @@ def unpack(blob: bytes) -> list[float]:
 
 
 class HashingEmbedder:
-    def __init__(self, dim: int = 4096):
+    def __init__(self, dim: int = 2048):
         self.dim = dim
         self.name = f"hashing-v2-{dim}"
 
