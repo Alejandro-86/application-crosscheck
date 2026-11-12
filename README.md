@@ -43,6 +43,21 @@ pharmacy rows ──────────────────────
 
 The only measured results are for the **rule-based baseline**, in [docs/results-rules.md](docs/results-rules.md): it scores 1.000 on every metric. That is expected, because the synthetic notes use a few templates, so it says little about real notes. The **LLM extractor has not been evaluated yet** (it needs an API key); run `make eval-llm` and compare. No LLM numbers are claimed.
 
+## Web app and API
+
+`make web` serves a small page (plain HTML/JS, no build step) and a JSON API from one process. On the page you can load a generated application or start blank, edit the declared
+conditions, medications and allergies, edit or paste clinical notes and pharmacy rows, and press **Check**. Flags appear with their evidence quotes, the quoted passages are highlighted
+in the notes, and each flag can be confirmed or dismissed.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/check` | Body: application, notes, pharmacy rows, extractor (`rules` or `llm`). Returns flags with evidence, unmapped terms and what was extracted. |
+| `GET /api/applications`, `GET /api/applications/{id}`, `GET /api/applications/{id}/answer-key` | Browse the generated applications and their planted errors. |
+| `GET/PUT /api/reviews` | Reviewer decisions, stored in a local JSON file. |
+
+Safety defaults: the server binds to localhost, input sizes and shapes are validated, all text is rendered as text (never as HTML), and the model extractor is **off** unless the server is
+started with `ALLOW_LLM=1` (it then uses your key and counts against `MAX_SPEND_USD`). There is no authentication, so do not expose it publicly with the LLM enabled.
+
 ## Limits
 
 - Synthetic, templated notes are far easier than real clinical text.
@@ -61,6 +76,8 @@ make data                     # writes data/generated/ from a fixed seed
 make test && make lint
 make eval-rules               # free baseline, writes docs/results-rules.md
 make demo                     # Streamlit app on the rules baseline (LLM mode uses your key)
+pip install -e ".[web]"       # adds FastAPI and uvicorn for the web app
+make web                      # web app + API on http://127.0.0.1:8000 (API docs at /api/docs)
 make eval-llm                 # LLM extractor on the first 20 applications; costs credits
 ```
 
@@ -81,6 +98,7 @@ src/crosscheck/
   oracle.py           ground truth for scoring
   evaluate.py         extraction and flag metrics, report writer
   demo.py             Streamlit app (demo_helpers.py holds the testable logic)
+  api.py, web/        FastAPI app and the static page
   config.py cache.py costs.py llm.py   settings, response cache, spend cap, chat client
 tests/                no network or key needed (fake clients)
 docs/results-rules.md baseline results

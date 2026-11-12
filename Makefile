@@ -1,4 +1,4 @@
-.PHONY: install lint format test data eval-rules eval-llm demo
+.PHONY: install lint format test data eval-rules eval-llm demo web
 
 install:
 	pip install -e ".[dev]"
@@ -25,3 +25,6 @@ eval-llm:
 
 demo:
 	streamlit run src/crosscheck/demo.py
+
+web:
+	uvicorn --factory crosscheck.api:create_app --port 8000
