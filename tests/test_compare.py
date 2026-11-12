@@ -100,3 +100,37 @@ def test_ungrounded_flags_are_detected():
         rows,
     )
     assert bad == [fabricated, no_evidence, pharm_bad]
+
+
+def test_unverified_flags_name_the_unmapped_terms_of_the_same_kind_only():
+    facts = PatientFacts(
+        doc_ids=["D1"],
+        unmapped=["persistently low mood", "mysterypil"],
+        unmapped_by_kind={"condition": ["persistently low mood"], "medication": ["mysterypil"]},
+    )
+    flags = compare(app(["depression"], meds=[("metformin", 500)]), facts, [])
+    by_type = {f.type: f for f in flags}
+    condition = by_type["unverified_declaration"]
+    assert condition.unmapped == ["persistently low mood"]
+    assert "persistently low mood" in condition.message and "mysterypil" not in condition.message
+    assert "not found in the notes" in condition.message
+    medication = by_type["unverified_medication"]
+    assert medication.unmapped == ["mysterypil"]
+    assert "mysterypil" in medication.message and "low mood" not in medication.message
+
+
+def test_unverified_flags_stay_plain_when_nothing_was_left_unmapped():
+    facts = PatientFacts(doc_ids=["D1"])
+    flag = compare(app(["depression"]), facts, [])[0]
+    assert flag.unmapped == [] and "could not map" not in flag.message
+
+
+def test_unmapped_terms_never_change_a_discrepancy_flag():
+    facts = PatientFacts(
+        conditions={"migraine": [ev("Diagnoses: migraine.")]},
+        doc_ids=["D1"],
+        unmapped_by_kind={"condition": ["flarbitis"]},
+    )
+    flag = compare(app(), facts, [])[0]
+    assert flag.type == "undisclosed_condition" and flag.unmapped == []
+    assert "could not map" not in flag.message

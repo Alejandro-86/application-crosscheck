@@ -73,3 +73,18 @@ def test_every_planted_error_is_flagged():
             assert any(
                 f.field == error.field and f.type in expected_types[error.type] for f in flags
             ), (app.app_id, error)
+
+
+def test_extractors_record_which_kind_of_term_they_could_not_map():
+    from crosscheck.facts import merge_results
+    from crosscheck.rules_extractor import RuleExtractor
+
+    text = "Diagnoses: flarbitis; asthma.\nCurrent medication: mysterypil 5 mg daily.\n"
+    result = RuleExtractor().extract("D1", text)
+    assert sorted(result.unmapped_terms) == [
+        ("condition", "flarbitis"),
+        ("medication", "mysterypil"),
+    ]
+    assert sorted(result.unmapped) == ["flarbitis", "mysterypil"]
+    merged = merge_results([result])
+    assert merged.unmapped_by_kind == {"condition": ["flarbitis"], "medication": ["mysterypil"]}

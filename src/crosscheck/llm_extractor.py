@@ -10,7 +10,7 @@ grounded and record what was dropped.
 import json
 import re
 
-from crosscheck.facts import ExtractionResult, Fact
+from crosscheck.facts import ExtractionResult, Fact, note_unmapped
 from crosscheck.llm import ChatClient
 from crosscheck.mapper import ConceptMapper
 from crosscheck.terminology import normalise_allergy, normalise_condition, normalise_drug
@@ -118,7 +118,7 @@ class LLMExtractor:
                         fact = _to_fact(kind, raw, quote, doc_id, item, canonical=mapped)
                         result.remapped.append(f"{raw} -> {mapped}")
                 if fact is None:
-                    result.unmapped.append(raw)
+                    note_unmapped(result, _MAP_KIND.get(kind, kind), raw)
                 else:
                     result.facts.append(fact)
         return result

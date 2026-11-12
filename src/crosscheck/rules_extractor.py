@@ -6,7 +6,7 @@ which is the point of comparing it against the LLM extractor on the same evaluat
 
 import re
 
-from crosscheck.facts import ExtractionResult, Fact
+from crosscheck.facts import ExtractionResult, Fact, note_unmapped
 from crosscheck.terminology import normalise_allergy, normalise_condition, normalise_drug
 
 CONDITIONS_LINE = re.compile(r"^(?:Diagnoses|Assessment): (?P<body>.+)\.$")
@@ -45,7 +45,7 @@ class RuleExtractor:
         item = item.strip()
         value = normalise_condition(item)
         if value is None:
-            result.unmapped.append(item)
+            note_unmapped(result, "condition", item)
         else:
             result.facts.append(Fact(kind, value, line, result.doc_id, item))
 
@@ -56,7 +56,7 @@ class RuleExtractor:
             return
         drug = normalise_drug(match["name"])
         if drug is None:
-            result.unmapped.append(match["name"])
+            note_unmapped(result, "medication", match["name"])
             return
         result.facts.append(
             Fact(
