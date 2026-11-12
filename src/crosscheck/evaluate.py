@@ -81,6 +81,8 @@ class EvalReport:
     unmapped_terms: int = 0
     retried_documents: int = 0
     retrieval: str = "all text"
+    remapped: int = 0
+    remapped_examples: list[str] = field(default_factory=list)
     chars_total: int = 0
     chars_sent: int = 0
     by_case: dict[str, PRF] = field(default_factory=dict)
@@ -205,6 +207,8 @@ def _score_extraction(report: EvalReport, patient, docs: list[LoadedDocument], r
         result = by_doc.get(doc.doc_id) or ExtractionResult(doc.doc_id)
         report.ungrounded_quotes += len(result.ungrounded)
         report.unmapped_terms += len(result.unmapped)
+        report.remapped += len(result.remapped)
+        report.remapped_examples += result.remapped[: max(0, 8 - len(report.remapped_examples))]
         report.retried_documents += result.attempts > 1
         truth = doc_truth(patient, doc.fields_present)
         got = {(f.kind, f.value, f.dose) for f in result.facts}
@@ -264,7 +268,8 @@ def format_report(report: EvalReport) -> str:
         f"({_pct(report.chars_sent, report.chars_total)})",
         f"- Flags dropped for missing evidence: {report.dropped_flags}",
         f"- Quotes not found in the note (dropped): {report.ungrounded_quotes}",
-        f"- Terms with no canonical mapping: {report.unmapped_terms}",
+        f"- Terms with no canonical mapping (left out of the comparison): {report.unmapped_terms}",
+        f"- Terms mapped by the model fallback (closed list, quote kept): {report.remapped}",
         f"- Notes needing a retry: {report.retried_documents}",
         "",
         "## Extraction (per fact kind, scored against the generator's labels)",
@@ -311,6 +316,9 @@ def format_report(report: EvalReport) -> str:
         "False positives (flagged, but a perfect extractor would not):",
     ]
     lines += [f"- {a}: {k[0]} / {k[1]}" for a, k in report.false_positives[:10]] or ["- none"]
+    if report.remapped_examples:
+        lines += ["", "Examples of terms the model fallback mapped:"]
+        lines += [f"- {example}" for example in report.remapped_examples]
     lines += ["", "False negatives (a perfect extractor would flag, but this run did not):"]
     lines += [f"- {a}: {k[0]} / {k[1]}" for a, k in report.false_negatives[:10]] or ["- none"]
     return "\n".join(lines) + "\n"
@@ -326,6 +334,12 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=DEFAULT_K)
     parser.add_argument("--embedder", choices=["hashing", "openai"], default="hashing")
     parser.add_argument("--sweep", action="store_true", help="compare all text with several k")
+    parser.add_argument(
+        "--mapper",
+        choices=["none", "llm"],
+        default="none",
+        help="llm: ask the model to map terms the table does not know (one call per new term)",
+    )
     args = parser.parse_args()
 
     if not store_path(args.data).exists():
@@ -378,9 +392,11 @@ def main() -> None:
     else:
         from crosscheck.llm import ChatClient
         from crosscheck.llm_extractor import LLMExtractor
+        from crosscheck.mapper import ConceptMapper
 
         settings = get_settings()
-        extractor = LLMExtractor(ChatClient(settings))
+        chat = ChatClient(settings)
+        extractor = LLMExtractor(chat, mapper=ConceptMapper(chat) if args.mapper == "llm" else None)
 
     report = run_evaluation(
         extractor, args.extractor, args.data, args.limit, embedder=embedder, k=args.k
