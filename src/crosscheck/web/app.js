@@ -1,15 +1,38 @@
 "use strict";
 // All user-supplied text is rendered with textContent or text nodes, never parsed as markup.
 
-const SEVERITY_ORDER = ["discrepancy", "data_quality", "unverified"];
-const SEVERITY_LABEL = {
-  discrepancy: "Discrepancies (evidence in the sources)",
-  data_quality: "Source conflicts (the sources disagree with each other)",
-  unverified: "Unverified (nothing found; absence is not proof)",
+const SEVERITIES = ["discrepancy", "data_quality", "unverified"];
+const SEVERITY_TITLE = {
+  discrepancy: "Discrepancies",
+  data_quality: "Source conflicts",
+  unverified: "Unverified",
 };
+const SEVERITY_HELP = {
+  discrepancy: "Evidence in the sources",
+  data_quality: "The sources disagree with each other",
+  unverified: "Nothing found; absence is not proof",
+};
+const SEVERITY_BADGE = { discrepancy: "Discrepancy", data_quality: "Source conflict", unverified: "Unverified" };
+const MAX_NOTES = 5;
+const AUTO_CHECK_DELAY_MS = 700;
 
 const $ = (id) => document.getElementById(id);
-const state = { apps: [], currentAppId: null, noteIds: [], reviews: {}, lastResult: null };
+const state = {
+  apps: [],
+  appId: null,
+  form: blankForm(),
+  reviews: {},
+  result: null,
+  resultNotes: [],
+  filter: null,
+  cache: {},
+  seq: 0,
+  timer: null,
+};
+
+function blankForm() {
+  return { name: "", conditions: [], medications: [], allergies: [], notes: [{ docId: null, text: "" }], pharmacy: [] };
+}
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -24,10 +47,7 @@ function el(tag, props = {}, ...children) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
   if (!response.ok) {
     let detail = response.statusText;
     try {
@@ -39,200 +59,421 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+function toast(message, kind = "info") {
+  const node = el("div", { class: `toast ${kind}`, text: message });
+  $("toasts").append(node);
+  setTimeout(() => node.remove(), 4500);
+}
+
 function setStatus(message, isError = false) {
   const status = $("status");
   status.textContent = message;
-  status.className = isError ? "error" : "";
+  status.className = isError ? "error-text" : "muted";
 }
 
-const lines = (text) => text.split("\n").map((s) => s.trim()).filter(Boolean);
+/* theme */
+function applyTheme(theme, persist) {
+  document.documentElement.setAttribute("data-theme", theme);
+  if (persist) {
+    try { localStorage.setItem("theme", theme); } catch (_) { /* private mode */ }
+  }
+  const dark = theme === "dark";
+  const button = $("theme-toggle");
+  button.setAttribute("aria-pressed", String(dark));
+  button.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
+}
 
-function parseMedications(text) {
-  return lines(text).map((line) => {
-    const match = line.match(/^(.+?)\s+(\d+)\s*(?:mg)?$/i);
-    if (!match) throw new Error(`Medication line not understood: "${line}" (use: name dose)`);
-    return { name: match[1], dose: Number(match[2]), unit: "mg" };
+function initTheme() {
+  applyTheme(document.documentElement.getAttribute("data-theme") || "light", false);
+  $("theme-toggle").addEventListener("click", () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next, true);
   });
 }
 
-function parsePharmacy(text) {
-  return lines(text).map((line) => {
-    const match = line.match(/^(\S+)\s+(\d+)\s*(?:mg)?\s*(\S*)$/i);
-    if (!match) throw new Error(`Pharmacy line not understood: "${line}" (use: drug dose [date])`);
-    return { drug: match[1], dose: Number(match[2]), unit: "mg", last_dispensed: match[3] || "unknown" };
-  });
+/* tabs */
+function showTab(tabsId, name) {
+  const tabs = $(tabsId);
+  tabs.querySelectorAll("[data-tab]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+  tabs.parentElement.querySelectorAll(":scope > .tab-panel").forEach((p) => { p.hidden = p.dataset.panel !== name; });
 }
 
-function addNote(docId, text) {
-  const index = $("notes").children.length;
-  const area = el("textarea", { rows: "8", "aria-label": `Clinical note ${index + 1}` });
-  area.value = text || "";
-  const label = docId || `new note`;
-  const box = el(
-    "div",
-    { class: "note-box" },
-    el("div", { class: "note-head" }, el("span", { text: `Clinical note (${label})` }),
-      el("button", { type: "button", text: "Remove", onclick: () => { box.remove(); } })),
-    area,
-  );
-  box.dataset.docId = docId || "";
-  $("notes").append(box);
-}
-
-function currentNotes() {
-  return [...$("notes").children]
-    .map((box) => ({ doc_id: box.dataset.docId || null, text: box.querySelector("textarea").value }))
-    .filter((note) => note.text.trim());
-}
-
-function noteIdFor(note, index) {
-  return note.doc_id || `N${index + 1}`;
-}
-
-function fillApplication(detail) {
-  state.currentAppId = detail.app_id;
-  $("name").value = detail.application.name;
-  $("conditions").value = detail.application.conditions.join("\n");
-  $("medications").value = detail.application.medications.map((m) => `${m.name} ${m.dose}`).join("\n");
-  $("allergies").value = detail.application.allergies.join("\n");
-  $("pharmacy").value = detail.pharmacy.map((r) => `${r.drug} ${r.dose} ${r.last_dispensed}`).join("\n");
-  $("notes").replaceChildren();
-  for (const note of detail.notes) addNote(note.doc_id, note.text);
-  clearResults();
-  $("answer-key-box").hidden = false;
-  $("answer-key").replaceChildren();
-}
-
-function clearResults() {
-  $("empty").hidden = false;
-  for (const id of ["warnings", "flags", "facts", "evidence"]) $(id).replaceChildren();
-  $("facts-box").hidden = true;
-  $("evidence-title").hidden = true;
-  state.lastResult = null;
-}
-
-function populateSelect() {
-  const only = $("only-flawed").checked;
-  const select = $("app-select");
-  select.replaceChildren(el("option", { value: "", text: "(blank application)" }));
-  for (const app of state.apps) {
-    if (only && app.planted_errors === 0) continue;
-    select.append(el("option", { value: app.app_id, text: `${app.app_id} - ${app.name} (${app.planted_errors} planted)` }));
+function initTabs() {
+  for (const id of ["editor-tabs", "result-tabs"]) {
+    $(id).querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => showTab(id, b.dataset.tab)));
   }
 }
 
-async function loadSelected() {
-  const id = $("app-select").value;
-  if (!id) {
-    state.currentAppId = null;
-    for (const field of ["name", "conditions", "medications", "allergies", "pharmacy"]) $(field).value = "";
-    $("notes").replaceChildren();
-    addNote(null, "");
-    clearResults();
+/* sidebar */
+function renderSidebar() {
+  const query = $("search").value.trim().toLowerCase();
+  const onlyFlawed = $("only-flawed").checked;
+  const list = $("app-list");
+  list.replaceChildren();
+  const shown = state.apps.filter((a) =>
+    (!onlyFlawed || a.planted_errors > 0) &&
+    (!query || a.name.toLowerCase().includes(query) || a.app_id.toLowerCase().includes(query)));
+  if (!shown.length) list.append(el("li", { class: "muted small", text: "No applications match." }));
+  for (const app of shown) {
+    const cached = state.cache[app.app_id];
+    let badge;
+    if (cached === undefined) badge = el("span", { class: "count", text: `${app.planted_errors} planted` });
+    else if (cached === 0) badge = el("span", { class: "count clean", text: "clean" });
+    else badge = el("span", { class: "count hit", text: `${cached} flag${cached === 1 ? "" : "s"}` });
+    const button = el(
+      "button",
+      { type: "button", class: "app-item", "aria-current": String(state.appId === app.app_id), onclick: () => selectApp(app.app_id) },
+      el("span", {}, el("span", { class: "name", text: app.name }), el("span", { class: "id", text: app.app_id })),
+      badge,
+    );
+    list.append(el("li", {}, button));
+  }
+}
+
+/* editors */
+function markDirty() {
+  if ($("extractor").value === "rules") {
+    setStatus("Edited; re-checking...");
+    clearTimeout(state.timer);
+    state.timer = setTimeout(runCheck, AUTO_CHECK_DELAY_MS);
+  } else {
+    setStatus("Edited. Press Run check to use the model.");
+  }
+}
+
+function renderChips(kind) {
+  const box = $(`${kind}-chips`);
+  box.replaceChildren();
+  state.form[kind].forEach((value, index) => {
+    const remove = el("button", {
+      type: "button",
+      "aria-label": `Remove ${value}`,
+      text: "×",
+      onclick: () => { state.form[kind].splice(index, 1); renderChips(kind); markDirty(); },
+    });
+    box.append(el("span", { class: "chip" }, document.createTextNode(value), remove));
+  });
+}
+
+function bindChipInput(kind) {
+  const input = $(`${kind}-input`);
+  const add = () => {
+    const parts = input.value.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return;
+    state.form[kind].push(...parts);
+    input.value = "";
+    renderChips(kind);
+    markDirty();
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      add();
+    } else if (event.key === "Backspace" && !input.value && state.form[kind].length) {
+      state.form[kind].pop();
+      renderChips(kind);
+      markDirty();
+    }
+  });
+  input.addEventListener("blur", add);
+}
+
+function textInput(value, label, placeholder, onChange, type = "text") {
+  const input = el("input", { type, "aria-label": label, placeholder, autocomplete: "off" });
+  if (type === "number") { input.min = "1"; input.max = "5000"; }
+  input.value = value ?? "";
+  input.addEventListener("input", () => onChange(input.value));
+  return input;
+}
+
+function removeButton(onClick, label) {
+  return el("button", { type: "button", class: "ghost x", "aria-label": label, text: "×", onclick: onClick });
+}
+
+function renderMedRows() {
+  const box = $("med-rows");
+  box.replaceChildren();
+  state.form.medications.forEach((med, index) => {
+    box.append(el(
+      "div",
+      { class: "row two" },
+      textInput(med.name, "Medication name", "name, e.g. metformin", (v) => { med.name = v; markDirty(); }),
+      textInput(med.dose, "Dose in mg", "mg", (v) => { med.dose = v; markDirty(); }, "number"),
+      removeButton(() => { state.form.medications.splice(index, 1); renderMedRows(); markDirty(); }, "Remove medication"),
+    ));
+  });
+}
+
+function renderPharmRows() {
+  const box = $("pharm-rows");
+  box.replaceChildren();
+  state.form.pharmacy.forEach((row, index) => {
+    box.append(el(
+      "div",
+      { class: "row" },
+      textInput(row.drug, "Drug", "drug", (v) => { row.drug = v; markDirty(); }),
+      textInput(row.dose, "Dose in mg", "mg", (v) => { row.dose = v; markDirty(); }, "number"),
+      textInput(row.date, "Date dispensed", "date (optional)", (v) => { row.date = v; markDirty(); }),
+      removeButton(() => { state.form.pharmacy.splice(index, 1); renderPharmRows(); markDirty(); }, "Remove pharmacy row"),
+    ));
+  });
+}
+
+function renderNotes() {
+  const box = $("notes");
+  box.replaceChildren();
+  state.form.notes.forEach((note, index) => {
+    const area = el("textarea", { rows: "9", "aria-label": `Clinical note ${index + 1}`, placeholder: "Paste or write a clinical note..." });
+    area.value = note.text;
+    area.addEventListener("input", () => { note.text = area.value; markDirty(); });
+    box.append(el(
+      "div",
+      { class: "note-card" },
+      el(
+        "div",
+        { class: "note-head" },
+        el("span", { text: `Note ${note.docId || `N${index + 1}`}` }),
+        el("button", {
+          type: "button",
+          class: "ghost",
+          text: "Remove",
+          onclick: () => { state.form.notes.splice(index, 1); renderNotes(); markDirty(); },
+        }),
+      ),
+      area,
+    ));
+  });
+  $("add-note").disabled = state.form.notes.length >= MAX_NOTES;
+}
+
+function renderEditor() {
+  $("name").value = state.form.name;
+  renderChips("conditions");
+  renderChips("allergies");
+  renderMedRows();
+  renderPharmRows();
+  renderNotes();
+}
+
+/* data loading */
+async function selectApp(id) {
+  clearTimeout(state.timer);
+  state.seq += 1;
+  if (id === null) {
+    state.appId = null;
+    state.form = blankForm();
+    $("case-label").textContent = "Blank application";
     $("answer-key-box").hidden = true;
+    clearResults();
+    renderEditor();
+    renderSidebar();
     return;
   }
   try {
-    fillApplication(await api(`/api/applications/${encodeURIComponent(id)}`));
-    setStatus("");
+    const detail = await api(`/api/applications/${encodeURIComponent(id)}`);
+    state.appId = id;
+    state.form = {
+      name: detail.application.name,
+      conditions: [...detail.application.conditions],
+      medications: detail.application.medications.map((m) => ({ name: m.name, dose: String(m.dose) })),
+      allergies: [...detail.application.allergies],
+      notes: detail.notes.map((n) => ({ docId: n.doc_id, text: n.text })),
+      pharmacy: detail.pharmacy.map((r) => ({ drug: r.drug, dose: String(r.dose), date: r.last_dispensed })),
+    };
+    if (!state.form.notes.length) state.form.notes.push({ docId: null, text: "" });
+    $("case-label").textContent = `${id} (generated)`;
+    $("answer-key-box").hidden = false;
+    $("answer-key").replaceChildren();
+    clearResults();
+    renderEditor();
+    renderSidebar();
+    if ($("extractor").value === "rules") runCheck();
+    else setStatus("Loaded. Press Run check to use the model.");
   } catch (error) {
-    setStatus(error.message, true);
+    toast(error.message, "error");
   }
 }
 
+/* checking */
 function buildPayload() {
+  const form = state.form;
+  const medications = [];
+  for (const med of form.medications) {
+    const name = String(med.name).trim();
+    const doseText = String(med.dose).trim();
+    if (!name && !doseText) continue;
+    const dose = Number(doseText);
+    if (!name || !Number.isInteger(dose) || dose < 1 || dose > 5000) {
+      return { error: `Medication "${name || "?"}" needs a name and a dose from 1 to 5000 mg.` };
+    }
+    medications.push({ name, dose, unit: "mg" });
+  }
+  const pharmacy = [];
+  for (const row of form.pharmacy) {
+    const drug = String(row.drug).trim();
+    const doseText = String(row.dose).trim();
+    if (!drug && !doseText) continue;
+    const dose = Number(doseText);
+    if (!drug || !Number.isInteger(dose) || dose < 1 || dose > 5000) {
+      return { error: `Pharmacy row "${drug || "?"}" needs a drug and a dose from 1 to 5000 mg.` };
+    }
+    pharmacy.push({ drug, dose, unit: "mg", last_dispensed: String(row.date).trim() || "unknown" });
+  }
+  const notes = form.notes
+    .map((n) => ({ doc_id: n.docId || null, text: n.text }))
+    .filter((n) => n.text.trim());
   return {
-    app_id: state.currentAppId || "adhoc",
-    application: {
-      name: $("name").value || "Applicant",
-      conditions: lines($("conditions").value),
-      medications: parseMedications($("medications").value),
-      allergies: lines($("allergies").value),
+    payload: {
+      app_id: state.appId || "adhoc",
+      application: {
+        name: form.name.trim() || "Applicant",
+        conditions: form.conditions,
+        medications,
+        allergies: form.allergies,
+      },
+      notes,
+      pharmacy,
+      extractor: $("extractor").value,
     },
-    notes: currentNotes(),
-    pharmacy: parsePharmacy($("pharmacy").value),
-    extractor: $("extractor").value,
   };
 }
 
 async function runCheck() {
-  let payload;
-  try {
-    payload = buildPayload();
-  } catch (error) {
-    setStatus(error.message, true);
+  clearTimeout(state.timer);
+  const built = buildPayload();
+  if (built.error) {
+    setStatus(built.error, true);
     return;
   }
+  const token = ++state.seq;
   setStatus("Checking...");
   $("check").disabled = true;
   try {
-    const result = await api("/api/check", { method: "POST", body: JSON.stringify(payload) });
-    state.lastResult = { result, notes: payload.notes };
-    renderResult(result, payload.notes);
-    setStatus(`Done: ${result.flags.length} flag(s).`);
+    const result = await api("/api/check", { method: "POST", body: JSON.stringify(built.payload) });
+    if (token !== state.seq) return;
+    state.result = result;
+    state.resultNotes = built.payload.notes;
+    state.filter = null;
+    if (state.appId) state.cache[state.appId] = result.flags.length;
+    renderResult();
+    renderSidebar();
+    const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setStatus(`Checked at ${when} with the ${result.extractor} extractor.`);
   } catch (error) {
-    setStatus(error.message, true);
+    if (token === state.seq) setStatus(error.message, true);
   } finally {
-    $("check").disabled = false;
+    if (token === state.seq) $("check").disabled = false;
   }
 }
 
-function renderWarnings(result) {
+function clearResults() {
+  state.result = null;
+  state.resultNotes = [];
+  state.filter = null;
+  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence"]) $(id).replaceChildren();
+  $("empty").hidden = false;
+  $("facts-box").hidden = true;
+  $("copy-report").disabled = true;
+  $("download-json").disabled = true;
+  setStatus("");
+}
+
+/* results */
+function reviewedCount(flags) {
+  return flags.filter((f) => state.reviews[f.id]).length;
+}
+
+function renderStats() {
+  const box = $("stats");
+  box.replaceChildren();
+  const flags = state.result.flags;
+  for (const severity of SEVERITIES) {
+    const count = flags.filter((f) => f.severity === severity).length;
+    const card = el(
+      "button",
+      {
+        type: "button",
+        class: `stat ${severity}`,
+        "aria-pressed": String(state.filter === severity),
+        "aria-label": `${SEVERITY_TITLE[severity]}: ${count}. Click to filter.`,
+        onclick: () => { state.filter = state.filter === severity ? null : severity; renderStats(); renderFlags(); },
+      },
+      el("span", { class: "n", text: String(count) }),
+      el("span", { class: "t", text: SEVERITY_TITLE[severity] }),
+    );
+    box.append(card);
+  }
+  box.append(el(
+    "div",
+    { class: "stat reviewed" },
+    el("span", { class: "n", text: `${reviewedCount(flags)}/${flags.length}` }),
+    el("span", { class: "t", text: "Reviewed" }),
+  ));
+}
+
+function renderWarnings() {
   const box = $("warnings");
   box.replaceChildren();
+  const r = state.result;
   const add = (message) => box.append(el("div", { class: "warning", text: message }));
-  if (result.unmapped_declared.length) add(`Not recognised, left out of the comparison: ${result.unmapped_declared.join("; ")}`);
-  if (result.unmapped_extracted.length) add(`Terms found in the notes with no canonical mapping: ${result.unmapped_extracted.join("; ")}`);
-  if (result.dropped_for_missing_evidence) add(`${result.dropped_for_missing_evidence} flag(s) were dropped because their evidence could not be verified.`);
+  if (r.unmapped_declared.length) add(`Not recognised, left out of the comparison: ${r.unmapped_declared.join("; ")}`);
+  if (r.unmapped_extracted.length) add(`Terms found in the notes with no canonical mapping: ${r.unmapped_extracted.join("; ")}`);
+  if (r.dropped_for_missing_evidence) add(`${r.dropped_for_missing_evidence} flag(s) were dropped because their evidence could not be verified.`);
 }
 
-function renderFlags(result) {
-  const container = $("flags");
-  container.replaceChildren();
-  if (!result.flags.length) {
-    container.append(el("div", { class: "card unverified", text: "No flags: the application matches the sources." }));
-    return;
-  }
-  for (const severity of SEVERITY_ORDER) {
-    const group = result.flags.filter((f) => f.severity === severity);
-    if (!group.length) continue;
-    container.append(el("h3", { text: SEVERITY_LABEL[severity] }));
-    for (const flag of group) container.append(flagCard(flag));
-  }
+function locate(docId, quote) {
+  showTab("result-tabs", "evidence");
+  const wanted = quote.toLowerCase();
+  const marks = [...$("evidence").querySelectorAll("mark")];
+  const mark = marks.find((m) => m.dataset.doc === docId && m.dataset.q === wanted);
+  if (!mark) return;
+  mark.scrollIntoView({ block: "center", behavior: "smooth" });
+  mark.classList.add("pulse");
+  setTimeout(() => mark.classList.remove("pulse"), 1600);
 }
 
 function flagCard(flag) {
-  const card = el(
+  const head = el(
     "div",
-    { class: `card ${flag.severity}` },
-    el("h4", {}, el("span", { class: `badge ${flag.severity}`, text: flag.severity.replace("_", " ") }), document.createTextNode(`${flag.type} - ${flag.field}`)),
-    el("div", { text: flag.message }),
+    { class: "card-head" },
+    el("span", { class: `badge ${flag.severity}`, text: SEVERITY_BADGE[flag.severity] }),
+    el("span", { class: "field", text: flag.field }),
+    el("span", { class: "type", text: flag.type }),
   );
+  const card = el("div", { class: `card ${flag.severity}` }, head, el("div", { text: flag.message }));
   for (const evidence of flag.evidence) {
-    const where = evidence.doc_id || "pharmacy database";
-    card.append(el("blockquote", { text: `${evidence.source} / ${where}: "${evidence.quote}"` }));
+    const where = evidence.doc_id ? `note ${evidence.doc_id}` : "pharmacy database";
+    const line = el(
+      "div",
+      { class: "evidence-line" },
+      el("span", {}, el("span", { class: "src", text: where }), el("span", { class: "q", text: `"${evidence.quote}"` })),
+    );
+    if (evidence.doc_id) line.append(el("button", { type: "button", class: "link", text: "Locate", onclick: () => locate(evidence.doc_id, evidence.quote) }));
+    card.append(line);
   }
   if (flag.severity === "unverified") {
-    card.append(el("div", { class: "muted", text: `Checked notes: ${flag.checked_docs.join(", ") || "none"}` }));
+    card.append(el("div", { class: "muted small", text: `Checked notes: ${flag.checked_docs.join(", ") || "none"}` }));
   }
   const decisions = el("div", { class: "decisions" }, el("span", { text: "Reviewer decision:" }));
   const buttons = {};
   const refresh = () => {
     for (const [name, button] of Object.entries(buttons)) {
-      button.setAttribute("aria-pressed", String((state.reviews[flag.id] || "—") === name));
+      button.setAttribute("aria-pressed", String(state.reviews[flag.id] === name));
     }
   };
   for (const name of ["Confirm", "Dismiss"]) {
     buttons[name] = el("button", {
       type: "button",
+      class: "choice",
       text: name,
       onclick: async () => {
-        const next = (state.reviews[flag.id] || "—") === name ? "—" : name;
+        const next = state.reviews[flag.id] === name ? "—" : name;
         try {
           state.reviews = await api("/api/reviews", { method: "PUT", body: JSON.stringify({ flag_id: flag.id, decision: next }) });
           refresh();
+          renderStats();
         } catch (error) {
-          setStatus(error.message, true);
+          toast(error.message, "error");
         }
       },
     });
@@ -243,8 +484,98 @@ function flagCard(flag) {
   return card;
 }
 
-function renderFacts(result) {
-  const facts = result.facts;
+function renderFlags() {
+  const box = $("flags");
+  box.replaceChildren();
+  const flags = state.result.flags;
+  $("empty").hidden = true;
+  if (!flags.length) {
+    box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "All clear" })), el("div", { text: "No flags: the application matches the sources." })));
+    return;
+  }
+  for (const severity of SEVERITIES) {
+    if (state.filter && state.filter !== severity) continue;
+    const group = flags.filter((f) => f.severity === severity);
+    if (!group.length) continue;
+    box.append(el("h3", { text: `${SEVERITY_TITLE[severity]} · ${SEVERITY_HELP[severity]}` }));
+    for (const flag of group) box.append(flagCard(flag));
+  }
+}
+
+const union = (...lists) => [...new Set(lists.flat())].sort();
+
+function statusCell(flags) {
+  const cell = el("td");
+  if (!flags.length) {
+    cell.append(el("span", { class: "badge ok", text: "match" }));
+    return cell;
+  }
+  for (const flag of flags) {
+    cell.append(el("span", { class: `badge ${flag.severity}`, text: flag.type.replaceAll("_", " "), title: flag.message }), document.createTextNode(" "));
+  }
+  return cell;
+}
+
+function renderCompare() {
+  const box = $("compare");
+  box.replaceChildren();
+  const r = state.result;
+  const flagsFor = (field, types) => r.flags.filter((f) => f.field === field && types.includes(f.type));
+  const sections = [
+    {
+      title: "Conditions",
+      types: ["undisclosed_condition", "contradicted_declaration", "unverified_declaration"],
+      items: union(r.declared.conditions, r.facts.conditions, r.facts.negated_conditions),
+      declared: (i) => (r.declared.conditions.includes(i) ? "declared" : "—"),
+      notes: (i) => (r.facts.conditions.includes(i) ? "documented" : r.facts.negated_conditions.includes(i) ? "denied" : "not found"),
+      pharmacy: () => "n/a",
+    },
+    {
+      title: "Medications",
+      types: ["undisclosed_medication", "dose_mismatch", "source_conflict", "unverified_medication"],
+      items: union(Object.keys(r.declared.medications), Object.keys(r.facts.medications), Object.keys(r.pharmacy)),
+      declared: (i) => (i in r.declared.medications ? `${r.declared.medications[i]} mg` : "—"),
+      notes: (i) => (i in r.facts.medications ? (r.facts.medications[i].map((d) => `${d} mg`).join(" / ") || "mentioned") : "—"),
+      pharmacy: (i) => (i in r.pharmacy ? `${r.pharmacy[i]} mg` : "—"),
+    },
+    {
+      title: "Allergies",
+      types: ["undisclosed_allergy"],
+      items: union(r.declared.allergies, r.facts.allergies),
+      declared: (i) => (r.declared.allergies.includes(i) ? "declared" : "—"),
+      notes: (i) => (r.facts.allergies.includes(i) ? "documented" : "—"),
+      pharmacy: () => "n/a",
+    },
+  ];
+  const body = el("tbody");
+  for (const section of sections) {
+    if (!section.items.length) continue;
+    body.append(el("tr", { class: "section" }, el("td", { colspan: "5", text: section.title })));
+    for (const item of section.items) {
+      const cell = (text, cls = "") => el("td", { class: cls, text });
+      const notes = section.notes(item);
+      const row = el(
+        "tr",
+        {},
+        cell(item),
+        cell(section.declared(item), section.declared(item) === "—" ? "miss" : ""),
+        cell(notes, notes === "denied" ? "denied" : notes === "not found" || notes === "—" ? "miss" : ""),
+        cell(section.pharmacy(item), section.pharmacy(item) === "n/a" || section.pharmacy(item) === "—" ? "miss" : ""),
+        statusCell(flagsFor(item, section.types)),
+      );
+      body.append(row);
+    }
+  }
+  if (!body.children.length) {
+    box.append(el("p", { class: "empty", text: "Nothing to compare yet: add conditions, medications or notes." }));
+    return;
+  }
+  const head = el("thead", {}, el("tr", {}, ...["Item", "Declared", "Notes", "Pharmacy", "Status"].map((t) => el("th", { text: t }))));
+  box.append(el("div", { class: "table-wrap" }, el("table", {}, head, body)));
+}
+
+function renderFacts() {
+  const facts = state.result.facts;
   const box = $("facts");
   box.replaceChildren();
   const row = (label, value) => box.append(el("p", {}, el("strong", { text: `${label}: ` }), document.createTextNode(value || "none")));
@@ -255,65 +586,131 @@ function renderFacts(result) {
   $("facts-box").hidden = false;
 }
 
-function highlightInto(container, text, quotes) {
+function highlightInto(container, text, quotes, docId) {
   const lower = text.toLowerCase();
   const ranges = [];
   for (const quote of quotes) {
     const start = lower.indexOf(quote.toLowerCase());
     if (start >= 0 && !ranges.some(([a, b]) => start < b && start + quote.length > a)) {
-      ranges.push([start, start + quote.length]);
+      ranges.push([start, start + quote.length, quote.toLowerCase()]);
     }
   }
   ranges.sort((a, b) => a[0] - b[0]);
   let cursor = 0;
-  for (const [start, end] of ranges) {
+  for (const [start, end, q] of ranges) {
     container.append(document.createTextNode(text.slice(cursor, start)));
-    container.append(el("mark", { text: text.slice(start, end) }));
+    const mark = el("mark", { text: text.slice(start, end) });
+    mark.dataset.doc = docId;
+    mark.dataset.q = q;
+    container.append(mark);
     cursor = end;
   }
   container.append(document.createTextNode(text.slice(cursor)));
 }
 
-function renderEvidence(result, notes) {
-  const container = $("evidence");
-  container.replaceChildren();
-  notes.forEach((note, index) => {
-    const id = noteIdFor(note, index);
-    const quotes = result.flags.flatMap((f) => f.evidence.filter((e) => e.doc_id === id).map((e) => e.quote));
-    const body = el("div", { class: "evidence-note" }, el("div", { class: "title", text: `Clinical note ${id}` }));
-    highlightInto(body, note.text, quotes);
-    container.append(body);
+function renderEvidence() {
+  const box = $("evidence");
+  box.replaceChildren();
+  const r = state.result;
+  if (!state.resultNotes.length) box.append(el("p", { class: "empty", text: "No clinical notes were provided." }));
+  state.resultNotes.forEach((note, index) => {
+    const id = note.doc_id || `N${index + 1}`;
+    const quotes = r.flags.flatMap((f) => f.evidence.filter((e) => e.doc_id === id).map((e) => e.quote));
+    const body = el("div", { class: "evidence-note" }, el("div", { class: "title", text: `Note ${id}` }));
+    highlightInto(body, note.text, quotes, id);
+    box.append(body);
   });
-  $("evidence-title").hidden = notes.length === 0;
+  const pharm = $("pharm-evidence");
+  pharm.replaceChildren();
+  const cited = [...new Set(r.flags.flatMap((f) => f.evidence.filter((e) => e.source === "pharmacy").map((e) => e.quote)))];
+  if (cited.length) {
+    pharm.append(el("h3", { text: "Pharmacy rows cited by flags" }));
+    for (const quote of cited) pharm.append(el("div", { class: "evidence-line" }, el("span", { class: "q", text: quote })));
+  }
 }
 
-function renderResult(result, notes) {
-  $("empty").hidden = true;
-  renderWarnings(result);
-  renderFlags(result);
-  renderFacts(result);
-  renderEvidence(result, notes);
+function renderResult() {
+  renderStats();
+  renderWarnings();
+  renderFlags();
+  renderCompare();
+  renderFacts();
+  renderEvidence();
+  $("copy-report").disabled = false;
+  $("download-json").disabled = false;
+}
+
+/* export */
+function reportText() {
+  const r = state.result;
+  const lines = [`# Cross-check report: ${state.form.name || "Applicant"} (${r.app_id})`, "", `Extractor: ${r.extractor}. Flags: ${r.flags.length}.`, ""];
+  for (const flag of r.flags) {
+    lines.push(`## ${flag.field} - ${flag.type} (${flag.severity})`, flag.message);
+    for (const e of flag.evidence) lines.push(`- ${e.doc_id ? `note ${e.doc_id}` : "pharmacy"}: "${e.quote}"`);
+    lines.push(`Reviewer decision: ${state.reviews[flag.id] || "none"}`, "");
+  }
+  return lines.join("\n");
+}
+
+async function copyReport() {
+  try {
+    await navigator.clipboard.writeText(reportText());
+    toast("Report copied to the clipboard.");
+  } catch (_) {
+    toast("Could not copy; your browser blocked clipboard access.", "error");
+  }
+}
+
+function downloadJson() {
+  const blob = new Blob([JSON.stringify({ result: state.result, reviews: state.reviews }, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = el("a", { href: url, download: `crosscheck-${state.result.app_id}.json` });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function revealAnswerKey() {
-  if (!state.currentAppId) return;
+  if (!state.appId) return;
   try {
-    const items = await api(`/api/applications/${encodeURIComponent(state.currentAppId)}/answer-key`);
+    const items = await api(`/api/applications/${encodeURIComponent(state.appId)}/answer-key`);
     const list = $("answer-key");
     list.replaceChildren();
     if (!items.length) list.append(el("li", { text: "This application is clean: no errors were planted." }));
     for (const item of items) list.append(el("li", { text: `${item.type}: ${item.field} (${item.detail})` }));
   } catch (error) {
-    setStatus(error.message, true);
+    toast(error.message, "error");
   }
 }
 
+/* start-up */
 async function init() {
-  $("add-note").addEventListener("click", () => addNote(null, ""));
+  initTheme();
+  initTabs();
+  bindChipInput("conditions");
+  bindChipInput("allergies");
+  $("name").addEventListener("input", () => { state.form.name = $("name").value; markDirty(); });
+  $("add-med").addEventListener("click", () => { state.form.medications.push({ name: "", dose: "" }); renderMedRows(); });
+  $("add-pharm").addEventListener("click", () => { state.form.pharmacy.push({ drug: "", dose: "", date: "" }); renderPharmRows(); });
+  $("add-note").addEventListener("click", () => { state.form.notes.push({ docId: null, text: "" }); renderNotes(); showTab("editor-tabs", "notes"); });
+  $("new-app").addEventListener("click", () => selectApp(null));
+  $("search").addEventListener("input", renderSidebar);
+  $("only-flawed").addEventListener("change", renderSidebar);
   $("check").addEventListener("click", runCheck);
-  $("app-select").addEventListener("change", loadSelected);
-  $("only-flawed").addEventListener("change", populateSelect);
+  $("copy-report").addEventListener("click", copyReport);
+  $("download-json").addEventListener("click", downloadJson);
   $("reveal").addEventListener("click", revealAnswerKey);
+  $("extractor").addEventListener("change", () => {
+    if ($("extractor").value === "rules") runCheck();
+    else setStatus("Model extractor selected. Press Run check (uses API credits).");
+  });
+  document.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      runCheck();
+    }
+  });
   try {
     const [health, apps, reviews] = await Promise.all([api("/api/health"), api("/api/applications"), api("/api/reviews")]);
     state.apps = apps;
@@ -322,16 +719,17 @@ async function init() {
       const option = $("llm-option");
       option.disabled = false;
       option.textContent = "LLM (uses the server's API key; costs credits)";
+      const pill = $("llm-pill");
+      pill.textContent = "LLM on";
+      pill.classList.add("on");
     }
-    populateSelect();
-    if ($("app-select").options.length > 1) {
-      $("app-select").selectedIndex = 1;
-      await loadSelected();
-    } else {
-      addNote(null, "");
-    }
+    renderSidebar();
+    const first = apps.find((a) => a.planted_errors > 0) || apps[0];
+    if (first) await selectApp(first.app_id);
+    else await selectApp(null);
   } catch (error) {
     setStatus(`Could not load the server data: ${error.message}`, true);
+    renderEditor();
   }
 }
 

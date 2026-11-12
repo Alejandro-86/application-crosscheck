@@ -17,3 +17,22 @@ def test_page_references_its_assets_and_every_script_target_exists():
 
     for element_id in set(re.findall(r'\$\("([\w-]+)"\)', script)):
         assert f'id="{element_id}"' in page, element_id
+
+
+def test_dynamic_ids_used_by_the_script_exist_in_the_page():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    for element_id in (
+        "conditions-chips",
+        "conditions-input",
+        "allergies-chips",
+        "allergies-input",
+    ):
+        assert f'id="{element_id}"' in page, element_id
+
+
+def test_theme_toggle_and_early_theme_script_are_present():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    style = (WEB / "style.css").read_text(encoding="utf-8")
+    assert 'id="theme-toggle"' in page
+    assert page.index("data-theme") < page.index("/static/style.css")
+    assert ':root[data-theme="dark"]' in style
