@@ -65,3 +65,10 @@ def test_raw_form_and_retrieval_controls_exist_in_the_page():
 def test_sidebar_shows_only_the_first_twenty_matches():
     script = (WEB / "app.js").read_text(encoding="utf-8")
     assert "SIDEBAR_LIMIT = 20" in script and "shown.slice(0, SIDEBAR_LIMIT)" in script
+
+
+def test_history_and_feedback_containers_exist_in_the_page():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    for element_id in ("history", "review-stats", "feedback-box"):
+        assert f'id="{element_id}"' in page, element_id
+    assert 'data-tab="history"' in page and 'data-panel="history"' in page

@@ -144,6 +144,7 @@
           <button role="tab" type="button" data-tab="compare" aria-selected="false">Declared vs record</button>
           <button role="tab" type="button" data-tab="evidence" aria-selected="false">Evidence in sources</button>
           <button role="tab" type="button" data-tab="retrieval" aria-selected="false">Retrieval</button>
+          <button role="tab" type="button" data-tab="history" aria-selected="false">History</button>
         </div>
 
         <div class="tab-panel" data-panel="flags">
@@ -165,6 +166,16 @@
         <div class="tab-panel" data-panel="retrieval" hidden>
           <div id="retrieval-info"></div>
         </div>
+
+        <div class="tab-panel" data-panel="history" hidden>
+          <p class="muted small">Every check is recorded: what ran, which model and prompt version, what it read, what it flagged and what it cost.</p>
+          <div id="history"></div>
+        </div>
+
+        <details id="feedback-box" class="feedback">
+          <summary>Reviewer feedback so far</summary>
+          <div id="review-stats"></div>
+        </details>
 
         <div id="answer-key-box" class="answer-key" hidden>
           <button type="button" id="reveal" class="ghost">Reveal the answer key (planted errors)</button>

@@ -67,6 +67,20 @@ class UsageLog:
                     total += json.loads(line).get("cost_usd") or 0.0
         return total
 
+    def totals(self) -> tuple[int, int, float]:
+        """(input tokens, output tokens, cost in USD) over everything logged so far."""
+        tokens_in = tokens_out = 0
+        cost = 0.0
+        if self.path.exists():
+            with self.path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        entry = json.loads(line)
+                        tokens_in += entry.get("input_tokens") or 0
+                        tokens_out += entry.get("output_tokens") or 0
+                        cost += entry.get("cost_usd") or 0.0
+        return tokens_in, tokens_out, cost
+
     def check_budget(self) -> None:
         spent = self.total_spend()
         if spent >= self.max_spend_usd:

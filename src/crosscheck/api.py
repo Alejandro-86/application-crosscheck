@@ -5,6 +5,7 @@ The model-based extractor is disabled unless ALLOW_LLM=1 is set, so the page is 
 """
 
 import os
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -17,13 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from crosscheck.applications import Application, DeclaredMedication
+from crosscheck.audit import AuditDB, RunRecord, audit_path
 from crosscheck.compare import Flag
 from crosscheck.config import ConfigError
 from crosscheck.corpus import LoadedDocument
 from crosscheck.costs import BudgetExceededError
-from crosscheck.demo_helpers import flag_id, load_demo_data, load_reviews, save_review
+from crosscheck.demo_helpers import flag_id, load_demo_data
 from crosscheck.embeddings import Embedder, HashingEmbedder
 from crosscheck.facts import PatientFacts
+from crosscheck.llm_extractor import PROMPT_VERSION
 from crosscheck.pharmacy import PharmacyRow
 from crosscheck.pharmacy_db import PharmacyDB, ensure_db
 from crosscheck.pipeline import Extractor, check_application, check_application_rag
@@ -82,6 +85,7 @@ class CheckRequest(BaseModel):
 class ReviewIn(BaseModel):
     flag_id: str = Field(min_length=1, max_length=200)
     decision: Literal["—", "Confirm", "Dismiss"]
+    run_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{12}$")
 
 
 def default_extractor_factory(name: str) -> Extractor:
@@ -94,6 +98,24 @@ def default_extractor_factory(name: str) -> Extractor:
     from crosscheck.llm_extractor import LLMExtractor
 
     return LLMExtractor(ChatClient(get_settings()))
+
+
+UsageProbe = Callable[[], tuple[int, int, float]]
+
+
+def default_usage_probe() -> tuple[int, int, float]:
+    """Cumulative (input tokens, output tokens, cost) from the model usage log."""
+    from crosscheck.config import get_settings
+    from crosscheck.costs import UsageLog
+
+    settings = get_settings()
+    return UsageLog(settings.usage_path, settings.max_spend_usd).totals()
+
+
+def default_model_label() -> str | None:
+    from crosscheck.config import get_settings
+
+    return get_settings().chat_model or None
 
 
 def default_embedder_factory(name: str) -> Embedder:
@@ -224,6 +246,8 @@ def create_app(
     extractor_factory: ExtractorFactory | None = None,
     allow_llm: bool | None = None,
     embedder_factory: EmbedderFactory | None = None,
+    usage_probe: UsageProbe | None = None,
+    model_label: Callable[[], str | None] | None = None,
 ) -> FastAPI:
     factory = extractor_factory or default_extractor_factory
     make_embedder = embedder_factory or default_embedder_factory
@@ -233,7 +257,10 @@ def create_app(
     store = StoreDB(store_path(data_dir))
     stored_by_id = {a.app_id: a for a in store.applications()}
     by_id = {a.app_id: a for a in data.applications}
-    reviews_path = data_dir / "reviews.json"
+    audit = AuditDB(audit_path(data_dir))
+    audit.import_legacy_reviews(data_dir / "reviews.json")
+    probe = usage_probe or default_usage_probe
+    label = model_label or default_model_label
     app = FastAPI(
         title="Application cross-check", docs_url="/api/docs", openapi_url="/api/openapi.json"
     )
@@ -322,6 +349,8 @@ def create_app(
         application, docs, rows, unmapped_declared = _build_inputs(request)
         if request.extractor == "llm" and not llm_enabled:
             raise HTTPException(403, "The model extractor is disabled on this server.")
+        started = time.perf_counter()
+        usage_before = probe() if request.extractor == "llm" else (0, 0, 0.0)
         try:
             extractor = factory(request.extractor)
             if request.retrieval == "rag":
@@ -341,10 +370,36 @@ def create_app(
             if request.extractor == "rules" and request.retrieval == "all":
                 raise
             raise HTTPException(502, f"Model call failed: {type(error).__name__}") from error
+        usage_after = probe() if request.extractor == "llm" else (0, 0, 0.0)
+        flags_json = [_flag_json(request.app_id, f) for f in result.flags]
+        info = result.retrieval
+        is_llm = request.extractor == "llm"
+        run_id = audit.record_run(
+            RunRecord(
+                app_id=request.app_id,
+                extractor=request.extractor,
+                retrieval=request.retrieval,
+                n_flags=len(flags_json),
+                flags=flags_json,
+                model=label() if is_llm else None,
+                prompt_version=PROMPT_VERSION if is_llm else "rules",
+                top_k=info.k if info else None,
+                embedder=info.embedder if info else None,
+                chars_sent=info.chars_sent if info else None,
+                chars_total=info.chars_total if info else None,
+                dropped=len(result.dropped),
+                unmapped=result.facts.unmapped,
+                input_tokens=usage_after[0] - usage_before[0],
+                output_tokens=usage_after[1] - usage_before[1],
+                cost_usd=(usage_after[2] - usage_before[2]) if is_llm else 0.0,
+                duration_ms=round((time.perf_counter() - started) * 1000),
+            )
+        )
         return {
+            "run_id": run_id,
             "app_id": request.app_id,
             "extractor": request.extractor,
-            "flags": [_flag_json(request.app_id, f) for f in result.flags],
+            "flags": flags_json,
             "dropped_for_missing_evidence": len(result.dropped),
             "unmapped_declared": unmapped_declared,
             "unmapped_extracted": result.facts.unmapped,
@@ -360,12 +415,41 @@ def create_app(
 
     @app.get("/api/reviews")
     def get_reviews() -> dict:
-        return load_reviews(reviews_path)
+        return audit.decisions()
 
     @app.put("/api/reviews")
     def put_review(review: ReviewIn) -> dict:
-        save_review(reviews_path, review.flag_id, review.decision)
-        return load_reviews(reviews_path)
+        audit.add_decision(review.flag_id, review.decision, review.run_id)
+        return audit.decisions()
+
+    @app.get("/api/reviews/history")
+    def review_history(flag_id: str = Query(min_length=1, max_length=200)) -> list[dict]:
+        return audit.decision_history(flag_id)
+
+    @app.get("/api/review-stats")
+    def review_stats() -> dict:
+        """What reviewers did with each kind of flag: the start of a feedback signal."""
+        stats = audit.decision_stats()
+        return {
+            "by_type": {
+                t: {**c, "dismiss_rate": round(c["Dismiss"] / (c["Confirm"] + c["Dismiss"]), 3)}
+                for t, c in stats.items()
+            }
+        }
+
+    @app.get("/api/audit/runs")
+    def audit_runs(
+        app_id: str | None = Query(default=None, pattern=r"^[A-Za-z0-9_-]{1,40}$"),
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> list[dict]:
+        return audit.runs(app_id, limit)
+
+    @app.get("/api/audit/runs/{run_id}")
+    def audit_run(run_id: str = PathParam(pattern=r"^[a-f0-9]{12}$")) -> dict:
+        found = audit.run(run_id)
+        if found is None:
+            raise HTTPException(404, f"Unknown run {run_id}")
+        return found
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 

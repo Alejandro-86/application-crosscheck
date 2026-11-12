@@ -44,6 +44,7 @@ The notes can also be read in full (no retrieval). Retrieval is optional so you 
 - **Two sources.** Notes and pharmacy can disagree, which is reported separately from application errors.
 - **Evaluation at two levels.** Extraction is scored against the generator's labels; flags are scored against the flags a perfect extractor would produce. The rules are identical in both, so any gap comes from extraction.
 - **Cost control.** Every model and embedding call is cached on disk, logged with token counts and estimated cost, and refused once logged spend reaches `MAX_SPEND_USD`.
+- **Every check leaves an audit record.** `audit.db` (separate from the read-only store) records what ran, with which model and a hash of the prompt, how much text it read, what it flagged with the evidence, tokens, cost and duration, and every reviewer decision as an append-only event. Failed checks are not recorded. Token and cost figures come from the usage-log difference around the call, so they are approximate if two checks overlap.
 - **The scraper does not guess.** A form missing a required field is not loaded and the reason is logged; a term with no canonical mapping is stored as written with a warning. Ingestion is idempotent (unchanged files are skipped by content hash, edits are replaced, deletions are removed) and one transaction, so a failure leaves the database as it was.
 - **A model fallback for unknown terms, on a closed list.** When the terminology table cannot map a term the model found ("sugar diabetes"), an optional `ConceptMapper` shows the model that one term and the list of canonical names and accepts only an answer that is exactly an entry of the list, otherwise "none". It is asked once per distinct term, only for conditions and medications, and the fact keeps its original grounded quote and is marked as model-mapped. It is off unless you pass `--mapper llm` to the evaluation, so you can measure the difference.
 - **"Not found" says what it could not read.** An unverified flag lists the note terms the system could not map (conditions for a condition, medications for a medication), so a gap in the terminology table shows up as a prompt to read the note rather than as a confident "absent".
@@ -84,6 +85,7 @@ Findings:
 - **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
 - **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
 - **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
+- **History and feedback:** a History tab lists the recorded checks for the selected application (open one for its model, prompt version, tokens and flags with evidence), and a reviewer-feedback table shows how reviewers treated each flag type.
 - **Export:** copy a Markdown report or download the JSON result.
 - **Dark mode:** the toggle in the top right switches themes. The choice is remembered, and the first visit follows your system setting.
 
@@ -94,7 +96,9 @@ Findings:
 | `GET /api/applications/{id}/retrieve?q=&k=` | Search the applicant's embedded note passages; without `q`, shows what a check would read. |
 | `GET /api/ingest/issues` | What the scraper loaded, and every error or warning it logged. |
 | `GET /api/pharmacy/{mrn}` | Look up one applicant's dispensing rows in the pharmacy database. |
-| `GET/PUT /api/reviews` | Reviewer decisions, stored in a local JSON file. |
+| `GET/PUT /api/reviews`, `GET /api/reviews/history?flag_id=` | Reviewer decisions, kept as an append-only event log in `audit.db`; the current decision is the latest event. An old `reviews.json` is imported once. |
+| `GET /api/review-stats` | Confirmed and dismissed counts per flag type, with a dismissed share: a noisy flag type shows up here. |
+| `GET /api/audit/runs?app_id=&limit=`, `GET /api/audit/runs/{id}` | The audit log: every check with its extractor, model, prompt version, retrieval settings, text sent, flags with evidence, tokens, cost and duration. |
 
 Safety defaults: the server binds to localhost, input sizes and shapes are validated, all text is rendered as text (never as HTML), and the model extractor is **off** unless the server is
 started with `ALLOW_LLM=1` (it then uses your key and counts against `MAX_SPEND_USD`). There is no authentication, so do not expose it publicly with the LLM enabled.
@@ -125,7 +129,7 @@ It is not wired into the web app or the evaluation, and it uses an in-memory che
 - Notes are chunked one line per passage. That suits short templated notes; long real records need larger, overlapping chunks.
 - Ingestion is a command you run, not a service: there is no watcher, queue or retry.
 - Matching patients by MRN is a simplification; no identity-mismatch checks yet.
-- The review step stores decisions in a local JSON file only.
+- Reviewer decisions are logged per flag but there is no reviewer identity, no authentication, and nothing yet feeds them back into training or thresholds.
 - The pharmacy database is a single local SQLite file with one table; a real system would query a pharmacy service with authentication and audit logging.
 
 ## Getting started
@@ -161,6 +165,7 @@ src/crosscheck/
   forms.py            renders applications as messy raw-text forms (two layouts, abbreviations, brands)
   ingest.py           the scraper: parse forms and notes, chunk, embed, load store.db idempotently
   store.py            the SQLite application store: schema and read-only queries
+  audit.py            the audit log and reviewer decision events (audit.db, writable)
   embeddings.py       offline hashing embedder and the cached, cost-capped OpenAI embedder
   retrieval.py        note chunks, topic + declared-item queries, top-k ranking, reduced documents
   terminology.py      surface form -> canonical term

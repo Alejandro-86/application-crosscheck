@@ -225,3 +225,14 @@ details summary { cursor: pointer; color: var(--muted); margin: .8rem 0 .3rem; }
 #top-k-label[hidden] { display: none !important; }
 
 .app-list .more { padding: .35rem .6rem .5rem; }
+
+/* history, feedback */
+.run { border: 1px solid var(--border); border-radius: 8px; margin: .4rem 0; background: var(--surface); }
+.run > summary { cursor: pointer; padding: .45rem .7rem; color: var(--text); display: grid; grid-template-columns: auto 1fr auto; gap: .6rem; align-items: baseline; margin: 0; }
+.run .when { font-size: .75rem; color: var(--muted); white-space: nowrap; }
+.run .what { font-size: .82rem; }
+.run .meta { font-size: .72rem; color: var(--muted); white-space: nowrap; }
+.run-body { padding: .2rem .8rem .7rem; font-size: .82rem; }
+.run-body .kv { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; margin: .3rem 0 .5rem; }
+.run-body .kv span:nth-child(odd) { color: var(--muted); }
+.feedback { margin-top: 1rem; }

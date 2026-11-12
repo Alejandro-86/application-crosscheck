@@ -300,3 +300,76 @@ def test_unverified_flag_tells_the_reviewer_which_note_terms_could_not_be_read(c
     flag = next(f for f in result["flags"] if f["type"] == "unverified_declaration")
     assert flag["unmapped"] == ["flarbitis"]
     assert "flarbitis" in flag["message"] and "could not map" in flag["message"]
+
+
+def test_every_check_is_recorded_with_its_flags_and_versions(data_dir):
+    usage = iter([(100, 10, 0.50), (140, 30, 0.75)])
+    app = TestClient(
+        create_app(
+            data_dir,
+            extractor_factory=lambda name: RuleExtractor(),
+            allow_llm=True,
+            usage_probe=lambda: next(usage),
+            model_label=lambda: "test-model",
+        )
+    )
+    result = app.post("/api/check", json=adhoc(extractor="llm")).json()
+    run = app.get(f"/api/audit/runs/{result['run_id']}").json()
+    assert run["extractor"] == "llm" and run["model"] == "test-model"
+    assert len(run["prompt_version"]) == 8 and run["prompt_version"] != "rules"
+    assert (run["input_tokens"], run["output_tokens"]) == (40, 20)
+    assert run["cost_usd"] == pytest.approx(0.25)
+    assert run["n_flags"] == len(result["flags"]) == len(run["flags"])
+    assert {f["id"] for f in run["flags"]} == {f["id"] for f in result["flags"]}
+    assert run["flags"][0]["evidence"] and run["duration_ms"] >= 0
+
+
+def test_a_rules_check_is_recorded_without_cost_or_model(client):
+    result = client.post("/api/check", json=adhoc(app_id="A0002")).json()
+    run = client.get(f"/api/audit/runs/{result['run_id']}").json()
+    assert (run["model"], run["prompt_version"], run["cost_usd"]) == (None, "rules", 0.0)
+    listed = client.get("/api/audit/runs", params={"app_id": "A0002", "limit": 5}).json()
+    assert listed[0]["run_id"] == result["run_id"]
+
+
+def test_a_failed_check_is_not_recorded(data_dir):
+    def failing(name):
+        raise RuntimeError("boom")
+
+    app = TestClient(create_app(data_dir, extractor_factory=failing, allow_llm=True))
+    before = len(app.get("/api/audit/runs", params={"limit": 200}).json())
+    assert app.post("/api/check", json=adhoc(extractor="llm")).status_code == 502
+    assert len(app.get("/api/audit/runs", params={"limit": 200}).json()) == before
+
+
+def test_audit_endpoints_validate_their_inputs(client):
+    assert client.get("/api/audit/runs/nope").status_code == 422
+    assert client.get("/api/audit/runs/" + "0" * 12).status_code == 404
+    assert client.get("/api/audit/runs", params={"limit": 0}).status_code == 422
+    assert client.get("/api/audit/runs", params={"app_id": "a b"}).status_code == 422
+
+
+def test_decisions_are_logged_with_history_and_feed_review_stats(data_dir):
+    app = TestClient(create_app(data_dir, allow_llm=False))
+    result = app.post("/api/check", json=adhoc(app_id="A0003")).json()
+    flag = result["flags"][0]["id"]
+    app.put(
+        "/api/reviews", json={"flag_id": flag, "decision": "Confirm", "run_id": result["run_id"]}
+    )
+    app.put("/api/reviews", json={"flag_id": flag, "decision": "Dismiss"})
+    history = app.get("/api/reviews/history", params={"flag_id": flag}).json()
+    assert [h["decision"] for h in history] == ["Confirm", "Dismiss"]
+    assert history[0]["run_id"] == result["run_id"]
+    kind = flag.split("|")[1]
+    stats = app.get("/api/review-stats").json()["by_type"][kind]
+    assert stats["Dismiss"] >= 1 and 0 < stats["dismiss_rate"] <= 1
+    bad = app.put("/api/reviews", json={"flag_id": flag, "decision": "Confirm", "run_id": "x"})
+    assert bad.status_code == 422
+
+
+def test_old_reviews_json_is_imported_when_the_audit_log_is_new(tmp_path):
+    generate_all(tmp_path, n_docs=40, seed=8)
+    ingest(tmp_path, HashingEmbedder())
+    (tmp_path / "reviews.json").write_text('{"A0001|dose_mismatch|metformin": "Confirm"}')
+    app = TestClient(create_app(tmp_path, allow_llm=False))
+    assert app.get("/api/reviews").json() == {"A0001|dose_mismatch|metformin": "Confirm"}

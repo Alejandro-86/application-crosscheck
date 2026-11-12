@@ -10,6 +10,7 @@ grounded and record what was dropped.
 import json
 import re
 
+from crosscheck.audit import prompt_version
 from crosscheck.facts import ExtractionResult, Fact, note_unmapped
 from crosscheck.llm import ChatClient
 from crosscheck.mapper import ConceptMapper
@@ -34,6 +35,8 @@ Rules:
   was changed, use the final dose, not the earlier one.
 - Statements such as "no known drug allergies" produce an empty allergies list.
 - If a list has no entries, return an empty list."""
+
+PROMPT_VERSION = prompt_version(SYSTEM_PROMPT)
 
 LISTS = {
     "conditions": "condition",
