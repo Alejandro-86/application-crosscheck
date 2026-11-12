@@ -5,6 +5,8 @@ RxNorm for drugs). Unknown terms return None so callers can flag them for review
 guessing.
 """
 
+import re
+
 from crosscheck.synthetic import CONDITION_FORMS, MED_CATALOG
 
 _CONDITIONS = {
@@ -30,3 +32,15 @@ def normalise_drug(text: str) -> str | None:
 
 def normalise_allergy(text: str) -> str:
     return _clean(text)
+
+
+_SURFACE = {**_CONDITIONS, **_DRUGS}
+_SURFACE_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(form) for form in sorted(_SURFACE, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def canonical_terms_in(text: str) -> list[str]:
+    """Canonical terms for every known surface form in the text (HTN -> hypertension)."""
+    return [_SURFACE[match.lower()] for match in _SURFACE_PATTERN.findall(text)]

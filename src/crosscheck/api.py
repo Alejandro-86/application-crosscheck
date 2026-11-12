@@ -10,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,15 +22,19 @@ from crosscheck.config import ConfigError
 from crosscheck.corpus import LoadedDocument
 from crosscheck.costs import BudgetExceededError
 from crosscheck.demo_helpers import flag_id, load_demo_data, load_reviews, save_review
+from crosscheck.embeddings import Embedder, HashingEmbedder
 from crosscheck.facts import PatientFacts
 from crosscheck.pharmacy import PharmacyRow
 from crosscheck.pharmacy_db import PharmacyDB, ensure_db
-from crosscheck.pipeline import Extractor, check_application
+from crosscheck.pipeline import Extractor, check_application, check_application_rag
+from crosscheck.retrieval import DEFAULT_K, RetrievalInfo, queries_for, rank
 from crosscheck.rules_extractor import RuleExtractor
+from crosscheck.store import StoredApplication, StoreDB, store_path
 from crosscheck.terminology import normalise_allergy, normalise_condition, normalise_drug
 
 WEB_DIR = Path(__file__).parent / "web"
 ExtractorFactory = Callable[[str], Extractor]
+EmbedderFactory = Callable[[str], Embedder]
 
 
 class MedicationIn(BaseModel):
@@ -64,6 +68,8 @@ class CheckRequest(BaseModel):
     notes: list[NoteIn] = Field(default_factory=list, max_length=5)
     pharmacy: list[PharmacyRowIn] = Field(default_factory=list, max_length=30)
     extractor: Literal["rules", "llm"] = "rules"
+    retrieval: Literal["all", "rag"] = "all"
+    top_k: int = Field(default=DEFAULT_K, ge=1, le=10)
 
     @model_validator(mode="after")
     def unique_note_ids(self):
@@ -88,6 +94,52 @@ def default_extractor_factory(name: str) -> Extractor:
     from crosscheck.llm_extractor import LLMExtractor
 
     return LLMExtractor(ChatClient(get_settings()))
+
+
+def default_embedder_factory(name: str) -> Embedder:
+    """The embedder the store was built with: the offline one, or OpenAI only when allowed."""
+    if name.startswith("hashing-v2-"):
+        return HashingEmbedder(int(name.rsplit("-", 1)[1]))
+    if os.environ.get("ALLOW_LLM") != "1":
+        raise PermissionError(f"The store uses {name}, which needs ALLOW_LLM=1 to query.")
+    from crosscheck.config import get_settings
+    from crosscheck.embeddings import OpenAIEmbedder
+
+    return OpenAIEmbedder(get_settings())
+
+
+def _retrieval_json(info: RetrievalInfo) -> dict:
+    return {
+        "embedder": info.embedder,
+        "k": info.k,
+        "chars_total": info.chars_total,
+        "chars_sent": info.chars_sent,
+        "queries": info.queries,
+        "hits": [
+            {
+                "doc_id": h.chunk.doc_id,
+                "line": h.chunk.idx,
+                "text": h.chunk.text,
+                "score": round(h.score, 3),
+                "queries": h.queries,
+            }
+            for h in info.hits
+        ],
+    }
+
+
+def _stored_json(stored: StoredApplication) -> dict:
+    """The application as the form declares it: terms as written, medications by generic name."""
+    return {
+        "name": stored.name,
+        "conditions": [i.raw for i in stored.items if i.kind == "condition"],
+        "medications": [
+            {"name": i.canonical, "dose": i.dose, "unit": i.unit}
+            for i in stored.items
+            if i.kind == "medication" and i.canonical and i.dose
+        ],
+        "allergies": [i.raw for i in stored.items if i.kind == "allergy"],
+    }
 
 
 def _flag_json(app_id: str, flag: Flag) -> dict:
@@ -170,11 +222,15 @@ def create_app(
     data_dir: Path = Path("data/generated"),
     extractor_factory: ExtractorFactory | None = None,
     allow_llm: bool | None = None,
+    embedder_factory: EmbedderFactory | None = None,
 ) -> FastAPI:
     factory = extractor_factory or default_extractor_factory
+    make_embedder = embedder_factory or default_embedder_factory
     llm_enabled = os.environ.get("ALLOW_LLM") == "1" if allow_llm is None else allow_llm
     data = load_demo_data(data_dir)
     pharmacy_db = PharmacyDB(ensure_db(data_dir))
+    store = StoreDB(store_path(data_dir))
+    stored_by_id = {a.app_id: a for a in store.applications()}
     by_id = {a.app_id: a for a in data.applications}
     reviews_path = data_dir / "reviews.json"
     app = FastAPI(
@@ -188,6 +244,7 @@ def create_app(
             "llm_enabled": llm_enabled,
             "applications": len(by_id),
             "pharmacy": pharmacy_db.counts(),
+            "store": {**store.counts(), "embedder": store.meta().get("embedder")},
         }
 
     @app.get("/api/applications")
@@ -205,20 +262,51 @@ def create_app(
     @app.get("/api/applications/{app_id}")
     def get_application(app_id: str) -> dict:
         found = _find(app_id)
+        stored = stored_by_id[app_id]
         return {
             "app_id": found.app_id,
             "mrn": found.mrn,
-            "application": {
-                "name": found.name,
-                "conditions": found.declared_conditions,
-                "medications": [asdict(m) for m in found.declared_medications],
-                "allergies": found.declared_allergies,
-            },
-            "notes": [
-                {"doc_id": d.doc_id, "text": d.text} for d in data.docs_by_mrn.get(found.mrn, [])
+            "application": _stored_json(stored),
+            "form_text": stored.raw_text,
+            "unmapped_declared": [
+                f"{i.kind}: {i.raw}" for i in stored.items if i.canonical is None
             ],
+            "notes": [{"doc_id": n.doc_id, "text": n.text} for n in store.notes_for_mrn(found.mrn)],
             "pharmacy": [_row_json(r) for r in pharmacy_db.rows_for_mrn(found.mrn)],
         }
+
+    @app.get("/api/applications/{app_id}/retrieve")
+    def retrieve(
+        app_id: str,
+        q: str = Query(default="", max_length=200),
+        k: int = Query(default=DEFAULT_K, ge=1, le=10),
+    ) -> dict:
+        """Search this applicant's stored note passages. Without q, show what a check would read."""
+        found = _find(app_id)
+        try:
+            embedder = make_embedder(store.meta().get("embedder", ""))
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except ConfigError as error:
+            raise HTTPException(503, str(error)) from error
+        index = store.index_for_mrn(found.mrn)
+        queries = [q.strip()] if q.strip() else queries_for(found)
+        hits = rank(index, embedder, queries, k)
+        notes = store.notes_for_mrn(found.mrn)
+        sent = {(h.chunk.doc_id, h.chunk.idx) for h in hits}
+        info = RetrievalInfo(
+            embedder=embedder.name,
+            k=k,
+            queries=queries,
+            hits=hits,
+            chars_total=sum(len(n.text) for n in notes),
+            chars_sent=sum(len(c.text) + 1 for c, _ in index if (c.doc_id, c.idx) in sent),
+        )
+        return _retrieval_json(info)
+
+    @app.get("/api/ingest/issues")
+    def ingest_issues() -> dict:
+        return {"counts": store.counts(), "meta": store.meta(), "issues": store.issues()}
 
     @app.get("/api/pharmacy/{mrn}")
     def pharmacy_rows(mrn: str = PathParam(pattern=r"^[A-Za-z0-9_-]{1,20}$")) -> dict:
@@ -235,7 +323,13 @@ def create_app(
             raise HTTPException(403, "The model extractor is disabled on this server.")
         try:
             extractor = factory(request.extractor)
-            result = check_application(application, docs, rows, extractor)
+            if request.retrieval == "rag":
+                embedder = make_embedder(store.meta().get("embedder", ""))
+                result = check_application_rag(
+                    application, docs, rows, extractor, embedder, k=request.top_k
+                )
+            else:
+                result = check_application(application, docs, rows, extractor)
         except PermissionError as error:
             raise HTTPException(403, str(error)) from error
         except ConfigError as error:
@@ -243,7 +337,7 @@ def create_app(
         except BudgetExceededError as error:
             raise HTTPException(429, str(error)) from error
         except Exception as error:
-            if request.extractor == "rules":
+            if request.extractor == "rules" and request.retrieval == "all":
                 raise
             raise HTTPException(502, f"Model call failed: {type(error).__name__}") from error
         return {
@@ -260,6 +354,7 @@ def create_app(
                 "allergies": application.declared_allergies,
             },
             "pharmacy": {row.drug: row.dose for row in rows},
+            "retrieval": _retrieval_json(result.retrieval) if result.retrieval else None,
         }
 
     @app.get("/api/reviews")

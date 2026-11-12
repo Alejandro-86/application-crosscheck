@@ -8,16 +8,14 @@ from pathlib import Path
 
 from crosscheck.applications import Application
 from crosscheck.compare import Flag
-from crosscheck.corpus import (
-    LoadedDocument,
-    load_applications,
-    load_documents,
-    load_pharmacy,
-)
+from crosscheck.corpus import LoadedDocument, load_documents, load_pharmacy
+from crosscheck.embeddings import HashingEmbedder
 from crosscheck.generate import generate_all
+from crosscheck.ingest import ingest
 from crosscheck.pharmacy import PharmacyRow
 from crosscheck.pharmacy_db import ensure_db
 from crosscheck.pipeline import index_documents
+from crosscheck.store import load_parsed_applications, store_path
 
 SEVERITY_ORDER = ["discrepancy", "data_quality", "unverified"]
 SEVERITY_LABEL = {
@@ -37,11 +35,13 @@ class DemoData:
 def load_demo_data(data_dir: Path) -> DemoData:
     if not (data_dir / "applications.json").exists() or not ensure_db(data_dir).exists():
         generate_all(data_dir)
+    if not store_path(data_dir).exists():
+        ingest(data_dir, HashingEmbedder())
     pharmacy: dict[str, list[PharmacyRow]] = defaultdict(list)
     for row in load_pharmacy(data_dir):
         pharmacy[row.mrn].append(row)
     return DemoData(
-        applications=load_applications(data_dir),
+        applications=load_parsed_applications(data_dir),
         docs_by_mrn=index_documents(load_documents(data_dir)),
         pharmacy_by_mrn=dict(pharmacy),
     )
