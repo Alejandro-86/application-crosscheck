@@ -557,6 +557,33 @@ def create_app(
 
         return StreamingResponse(lines(), media_type="application/x-ndjson")
 
+    @app.get("/api/applications/{app_id}/workflow/pending")
+    def pending_reviews(app_id: str) -> list[dict]:
+        """Paused reviews for an application, rebuilt from the audit log and the checkpoints."""
+        _find(app_id)
+        pending = []
+        for run in audit.awaiting_reviews(app_id):
+            thread_id = run["thread_id"]
+            if not thread_id or not workflow.is_paused(thread_id):
+                continue
+            outcome = workflow.outcome(None, thread_id)
+            pending.append(
+                {
+                    "run_id": run["run_id"],
+                    "thread_id": thread_id,
+                    "started": run["ts"],
+                    "status": "awaiting_review",
+                    "path": [*compact_path(outcome.trace), "human_review"],
+                    "reasons": run["reasons"],
+                    "flags": run["flags"],
+                    "unmapped": run["unmapped"],
+                    "facts_read": outcome.state.get("facts_read", 0),
+                    "notes_available": outcome.state.get("notes_available", 0),
+                    "retrieval": None,
+                }
+            )
+        return pending
+
     @app.post("/api/workflow/{thread_id}/resume")
     def resume_workflow(
         request: WorkflowResumeIn, thread_id: str = PathParam(pattern=r"^[a-f0-9]{16}$")

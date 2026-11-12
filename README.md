@@ -22,9 +22,13 @@ Retrieval: highlighted lines were sent to the extractor, struck-through ones wer
 
 ![Retrieval view: which note lines were sent and which were skipped](docs/img/retrieval.png)
 
-The review workflow pauses, and says why, when there are flags or the notes contain terms the system could not read:
+The review workflow. The graph is drawn from LangGraph's own structure and lit as the run streams in (`extract_note ×2` ran in parallel); it paused at `human_review`, says why, and lists the saved checkpoints:
 
 ![Workflow view: a paused review with two reasons and a flag to decide](docs/img/workflow.png)
+
+A paused review is saved in a SQLite checkpoint, so after a server restart it is listed again and can be reopened and finished:
+
+![A paused review listed again after a server restart](docs/img/pending.png)
 
 Every check is recorded, and reviewer decisions are logged:
 
@@ -113,7 +117,7 @@ Findings:
 - **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
 - **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
 - **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
-- **Review workflow:** the **Review workflow** button runs the check as the graph. The Workflow tab shows the path it took, why it needs a review (flags, unreadable note terms, or notes it could not read at all), and lets you Confirm or Dismiss each flag and submit. Decisions are written to the audit log against that run. An application the graph clears says so. A paused review survives a server restart.
+- **Review workflow:** the **Review workflow** button runs the check as the LangGraph graph and streams it. The Workflow tab draws the real graph (taken from LangGraph's own description of itself), lights each node up as it finishes (the parallel note extractions count up together), says why the run paused (flags, unreadable note terms, or notes it could not read at all), lets you Confirm or Dismiss each flag and submit, and lists the run's checkpoints saved in SQLite. Decisions are written to the audit log against that run, and a paused review survives a server restart.
 - **History and feedback:** a History tab lists the recorded checks for the selected application (open one for its model, prompt version, tokens and flags with evidence), and a reviewer-feedback table shows how reviewers treated each flag type.
 - **Export:** copy a Markdown report or download the JSON result.
 - **Dark mode:** the toggle in the top right switches themes. The choice is remembered, and the first visit follows your system setting.

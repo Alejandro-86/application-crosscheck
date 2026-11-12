@@ -23,10 +23,12 @@ ALLOW_LLM=1 make web      # open http://127.0.0.1:8000
 | **0:35** | Click **Locate** on the asthma flag. | "He declared asthma. The note, a free-text letter, says 'There is no evidence of asthma.' and nuts is undisclosed. Every flag has a verbatim quote, and a flag whose quote can't be found in the source is dropped before you see it. The same letter mentions his father's kidney disease. It isn't treated as his." |
 | **1:00** | Search **A0014** (Bella Hughes). Set **Notes read** to *Retrieved passages (RAG)*. Run check. Open the **Retrieval** tab. | "With retrieval, the model only reads the passages that match the application's items plus fixed topic questions. Highlighted lines were sent, struck-through ones weren't: 72% of the text here." |
 | **1:25** | Open **Declared vs record**. | "Omeprazole: the applicant left it out, the notes say 20 mg, the pharmacy dispensed 40. That's a source conflict, a different flag from an applicant error." |
-| **1:40** | Search **A0009** (Colin Clarke). Click **Review workflow**. | "Now the same check as a graph that can stop and wait for a person." |
+| **1:40** | Search **A0009** (Colin Clarke). Click **Review workflow**. | "Now the same check as a LangGraph graph, drawn here from LangGraph's own description of itself. Watch it run: it selected the notes, extracted each one in parallel, compared, and stopped at human review." |
 | **1:55** | Point at the two reasons. | "It paused for two reasons: there's a flag, and the notes contain 'persistently low mood', which the system couldn't map to a known condition. A plain pipeline would have said no problem. This one says it didn't fully read the record." |
 | **2:15** | Click **Confirm**, then **Submit review**. Open **History**. Open the run. Open *Reviewer feedback*. | "Decisions are written to an audit log, with the model, a hash of the prompt, what it read, the evidence and the cost. Decisions are append-only, and the feedback table shows which flag types reviewers dismiss." |
 | **2:40** | Stop clicking. | "I tested it two ways. A free regression gate runs in CI. On 100 hard applications the model scored flag precision 0.96 and recall 1.0. The traps I expected to hurt it didn't. The loss was my own terminology table. It's synthetic data, one small model and one run, and it isn't deployed." |
+
+**Optional, 30 seconds, the best LangGraph moment:** leave A0009's review paused (do not click Submit), stop the server (Ctrl+C) and start it again (`ALLOW_LLM=1 make web`), reload, open **A0009**, then the **Workflow** tab. A "Waiting for review" card lists the paused run. Click **Open**: the graph reappears paused at `human_review` with its flags, and **Submit review** finishes it. Say: "That review lived in a SQLite checkpoint. The server restarted and the run resumed exactly where it stopped."
 
 ## If something goes wrong
 
@@ -35,10 +37,11 @@ ALLOW_LLM=1 make web      # open http://127.0.0.1:8000
 | Model call fails or is slow | Switch to *Rules*, say the narrative letters need the model, and show the form, evidence and history instead. |
 | A0027 shows no flags | Press **Run check** again with the extractor set to LLM (it only auto-runs for Rules). |
 | Page is empty | `make data`, then restart `make web`. |
-| Asked to show the code | `pipeline.py` (the flow), `compare.py` (`ungrounded_flags` is the guardrail), `graph.py` (routing). |
+| Asked to show the code | `pipeline.py` (the flow), `compare.py` (`ungrounded_flags` is the guardrail), `graph.py` (the LangGraph workflow: routing, parallel extraction, the pause). |
 
 ## Likely questions, short answers
 
+- **Why LangGraph?** It is the engine for every check. Parallel per-note extraction (`Send`), a review step that really pauses and resumes (`interrupt`), checkpoints in SQLite so a paused review survives a restart, and streamed progress are all things it gives me instead of hand-rolled code.
 - **Why not fine-tune?** Prompting, retrieval and code checks reached the numbers; fine-tuning only makes sense behind a labelled set and a measured ceiling.
 - **How do you know it works?** [docs/results-llm-luna-hard.md](results-llm-luna-hard.md): extraction and flags are scored separately, per kind of hard case, with a random control for retrieval.
 - **Did embeddings help?** OpenAI embeddings were no better than the free offline ones on this data, and flag results were identical, because each patient's notes repeat the same facts. A test that would separate them needs sentence-level passages and differently worded queries.
