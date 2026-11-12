@@ -4,23 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from crosscheck.cache import Cache, make_key
-from crosscheck.config import ConfigError, Settings
+from crosscheck.config import ConfigError
 from crosscheck.costs import BudgetExceededError, UsageLog, cost_usd, load_prices
 from crosscheck.llm import ChatClient
-
-
-def make_settings(tmp_path, *, chat_model="gpt-6-luna", max_spend=10.0) -> Settings:
-    prices = tmp_path / "prices.toml"
-    prices.write_text('[models."gpt-6-luna"]\ninput = 1.0\noutput = 2.0\n')
-    return Settings(
-        openai_api_key="test",
-        chat_model=chat_model,
-        max_spend_usd=max_spend,
-        cache_path=tmp_path / "cache.sqlite",
-        usage_path=tmp_path / "usage.jsonl",
-        prices_path=prices,
-        data_dir=tmp_path / "data",
-    )
+from helpers import make_settings
 
 
 class FakeChat:
