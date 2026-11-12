@@ -75,3 +75,25 @@ def test_usage_log_total(tmp_path):
     log.record(kind="chat", model="m", input_tokens=1, output_tokens=1, cost=1.5, cached=False)
     log.record(kind="chat", model="m", input_tokens=1, output_tokens=1, cost=None, cached=False)
     assert log.total_spend() == pytest.approx(1.5)
+
+
+def test_the_cache_is_safe_to_use_from_several_threads(tmp_path):
+    import threading
+
+    cache = Cache(tmp_path / "threads.sqlite")
+    errors = []
+
+    def work(worker):
+        try:
+            for i in range(50):
+                cache.set(f"{worker}-{i}", str(i))
+                assert cache.get(f"{worker}-{i}") == str(i)
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and cache.get("7-49") == "49"

@@ -1,34 +1,46 @@
-"""The cross-check as a LangGraph workflow with a human-review step.
+"""The cross-check, as a LangGraph workflow. Every check in this project runs through it.
 
-    START -> [retrieve] -> extract -> compare -> route -+-> human_review (pauses) -> finalize
-                                                        +-> finalize (nothing to review)
+    START -> [retrieve] -> select_notes --Send per note--> extract_note (parallel) -> compare
+                                                                                        |
+                              +-- human_review (pauses for a person) -> finalize  <-----+
+                              +-- finalize (nothing to review)
 
-The pipeline functions are the same ones `pipeline.check_application` uses, so the graph returns
-the same flags. What the graph adds is control flow a plain function does not give you:
-  - a conditional entry (retrieve only when an embedder is supplied),
-  - a routing rule: review when there are flags, OR the notes contained terms the system could not
-    read, OR notes exist but the extractor read no facts from any of them. "Clear" must mean the
-    sources were read and agree, never "nothing was found",
-  - a real pause: `human_review` interrupts, the state is checkpointed, and the run resumes with
-    the reviewer's decisions without redoing the extraction.
+What LangGraph provides here, and where:
+  - Typed state with reducers: `path` and `docs_read` are appended to by parallel branches.
+  - Conditional edges: retrieval only when an embedder is supplied; the review routing rule.
+  - `Send` (map-reduce): one `extract_note` task per note, run in parallel up to MAX_PARALLEL.
+  - `interrupt` / `Command(resume=...)`: the review step pauses the run and resumes it with a
+    person's decisions, without repeating the extraction.
+  - A SQLite checkpointer: a paused review survives a server restart; the run is resumed by thread.
+  - Streaming (`stream_mode="updates"`): node-by-node progress, used by the web page.
+  - State history: every checkpoint of a run can be listed afterwards.
+  - Graph introspection: the diagram in the web page and the README comes from `get_graph()`.
+
+The same node functions run in two compiled graphs: an interactive one (with the pause, needs a
+checkpointer) used by the review workflow, and a batch one (no pause; a run that would need a
+review ends with the status "needs_review") used by `pipeline.check_application`, the evaluation
+and the regression gate. The routing rule is identical in both.
 
 Heavy objects (extractor, embedder, documents) travel in the run config, not in the checkpointed
-state, which stays small and serialisable. Needs `pip install langgraph`.
+state, which stays small and serialisable.
 """
 
+import operator
+import threading
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, Send, interrupt
 
 from crosscheck.applications import Application
 from crosscheck.compare import compare, ungrounded_flags
 from crosscheck.corpus import LoadedDocument
 from crosscheck.demo_helpers import flag_id
 from crosscheck.embeddings import Embedder
-from crosscheck.facts import merge_results
+from crosscheck.facts import ExtractionResult, merge_results
 from crosscheck.pharmacy import PharmacyRow
 from crosscheck.pipeline import CheckResult, Extractor
 from crosscheck.retrieval import (
@@ -42,10 +54,13 @@ from crosscheck.retrieval import (
 )
 
 DECISIONS = ("Confirm", "Dismiss", "—")
+MAX_PARALLEL = 4
 
 
 class CheckState(TypedDict, total=False):
     app_id: str
+    path: Annotated[list[str], operator.add]
+    docs_read: Annotated[list[str], operator.add]
     flags: list[dict]
     unmapped: list[str]
     facts_read: int
@@ -54,9 +69,12 @@ class CheckState(TypedDict, total=False):
     dropped: int
     chars_sent: int
     chars_total: int
-    route: str
     decisions: dict[str, str]
     status: str
+
+
+class NoteInput(TypedDict):
+    index: int
 
 
 @dataclass
@@ -72,9 +90,9 @@ class RunContext:
     index: Index | None = None
     used_docs: list[LoadedDocument] = field(default_factory=list)
     retrieval: RetrievalInfo | None = None
-    results: list = field(default_factory=list)
+    results: dict[int, ExtractionResult] = field(default_factory=dict)
     result: CheckResult | None = None
-    trace: list[str] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def _ctx(config) -> RunContext:
@@ -82,12 +100,11 @@ def _ctx(config) -> RunContext:
 
 
 def _enter(state: CheckState, config) -> str:
-    return "retrieve" if _ctx(config).embedder is not None else "extract"
+    return "retrieve" if _ctx(config).embedder is not None else "select_notes"
 
 
 def retrieve(state: CheckState, config) -> CheckState:
     ctx = _ctx(config)
-    ctx.trace.append("retrieve")
     assert ctx.embedder is not None
     index = ctx.index if ctx.index is not None else build_index(ctx.docs, ctx.embedder)
     queries = queries_for(ctx.app)
@@ -101,27 +118,45 @@ def retrieve(state: CheckState, config) -> CheckState:
         chars_total=sum(len(d.text) for d in ctx.docs),
         chars_sent=sum(len(d.text) for d in ctx.used_docs),
     )
-    return {"chars_sent": ctx.retrieval.chars_sent, "chars_total": ctx.retrieval.chars_total}
+    return {
+        "path": ["retrieve"],
+        "chars_sent": ctx.retrieval.chars_sent,
+        "chars_total": ctx.retrieval.chars_total,
+    }
 
 
-def extract(state: CheckState, config) -> CheckState:
+def select_notes(state: CheckState, config) -> CheckState:
     ctx = _ctx(config)
-    ctx.trace.append("extract")
     if ctx.embedder is None:
         ctx.used_docs = ctx.docs
-    ctx.results = [ctx.extractor.extract(d.doc_id, d.text) for d in ctx.used_docs]
-    return {}
+    return {"path": ["select_notes"], "notes_available": len(ctx.docs)}
+
+
+def fan_out(state: CheckState, config) -> list:
+    """One extraction task per note, run in parallel; with no notes, go straight to compare."""
+    used = _ctx(config).used_docs
+    return [Send("extract_note", {"index": i}) for i in range(len(used))] or ["compare"]
+
+
+def extract_note(state: NoteInput, config) -> CheckState:
+    ctx = _ctx(config)
+    doc = ctx.used_docs[state["index"]]
+    result = ctx.extractor.extract(doc.doc_id, doc.text)
+    with ctx.lock:
+        ctx.results[state["index"]] = result
+    return {"path": ["extract_note"], "docs_read": [doc.doc_id]}
 
 
 def compare_and_ground(state: CheckState, config) -> CheckState:
     ctx = _ctx(config)
-    ctx.trace.append("compare")
-    facts = merge_results(ctx.results)
+    # Merge in note order, not completion order, so parallel runs give identical results.
+    results = [ctx.results[i] for i in sorted(ctx.results)]
+    facts = merge_results(results)
     flags = compare(ctx.app, facts, ctx.pharmacy_rows)
     dropped = ungrounded_flags(flags, {d.doc_id: d.text for d in ctx.used_docs}, ctx.pharmacy_rows)
     kept = [f for f in flags if f not in dropped]
-    ctx.result = CheckResult(ctx.app.app_id, kept, facts, dropped, ctx.results, ctx.retrieval)
-    facts_read = sum(len(r.facts) for r in ctx.results)
+    ctx.result = CheckResult(ctx.app.app_id, kept, facts, dropped, results, ctx.retrieval)
+    facts_read = sum(len(r.facts) for r in results)
     reasons = []
     if kept:
         reasons.append("flags")
@@ -130,6 +165,7 @@ def compare_and_ground(state: CheckState, config) -> CheckState:
     if ctx.docs and facts_read == 0:
         reasons.append("no_facts_read")
     return {
+        "path": ["compare"],
         "flags": [
             {
                 "id": flag_id(ctx.app.app_id, f),
@@ -141,15 +177,18 @@ def compare_and_ground(state: CheckState, config) -> CheckState:
         ],
         "unmapped": facts.unmapped,
         "facts_read": facts_read,
-        "notes_available": len(ctx.docs),
         "review_reasons": reasons,
         "dropped": len(dropped),
     }
 
 
-def route(state: CheckState) -> str:
+def _route_interactive(state: CheckState) -> str:
     """Review whenever there is something to look at or the sources were not really read."""
     return "human_review" if state.get("review_reasons") else "finalize"
+
+
+def _route_batch(state: CheckState) -> str:
+    return "finalize"
 
 
 def _validate_decisions(decisions: dict[str, str], shown: set[str]) -> None:
@@ -158,10 +197,7 @@ def _validate_decisions(decisions: dict[str, str], shown: set[str]) -> None:
             raise ValueError(f"Invalid review decision: {key!r} -> {value!r}")
 
 
-def human_review(state: CheckState, config) -> CheckState:
-    ctx = _ctx(config)
-    if not ctx.trace or ctx.trace[-1] != "human_review":  # this node re-enters on resume
-        ctx.trace.append("human_review")
+def human_review(state: CheckState) -> CheckState:
     reply = interrupt(
         {
             "app_id": state["app_id"],
@@ -172,33 +208,71 @@ def human_review(state: CheckState, config) -> CheckState:
     )
     decisions = reply["decisions"]  # wrapped: LangGraph ignores an empty resume value
     _validate_decisions(decisions, {f["id"] for f in state["flags"]})
-    return {"decisions": {k: v for k, v in decisions.items() if v != "—"}}
+    return {"path": ["human_review"], "decisions": {k: v for k, v in decisions.items() if v != "—"}}
 
 
-def finalize(state: CheckState, config) -> CheckState:
-    _ctx(config).trace.append("finalize")
-    return {"status": "reviewed" if "decisions" in state else "auto_clear"}
+def finalize(state: CheckState) -> CheckState:
+    if "decisions" in state:
+        status = "reviewed"
+    elif state.get("review_reasons"):
+        status = "needs_review"
+    else:
+        status = "auto_clear"
+    return {"path": ["finalize"], "status": status}
 
 
-def build_graph(checkpointer=None):
+def build_graph(*, interactive: bool, checkpointer=None):
     graph = StateGraph(CheckState)
     graph.add_node("retrieve", retrieve)
-    graph.add_node("extract", extract)
+    graph.add_node("select_notes", select_notes)
+    graph.add_node("extract_note", extract_note, input_schema=NoteInput)
     graph.add_node("compare", compare_and_ground)
-    graph.add_node("human_review", human_review)
     graph.add_node("finalize", finalize)
-    graph.add_conditional_edges(START, _enter, ["retrieve", "extract"])
-    graph.add_edge("retrieve", "extract")
-    graph.add_edge("extract", "compare")
-    graph.add_conditional_edges("compare", route, ["human_review", "finalize"])
-    graph.add_edge("human_review", "finalize")
+    graph.add_conditional_edges(START, _enter, ["retrieve", "select_notes"])
+    graph.add_edge("retrieve", "select_notes")
+    graph.add_conditional_edges("select_notes", fan_out, ["extract_note", "compare"])
+    graph.add_edge("extract_note", "compare")
+    if interactive:
+        graph.add_node("human_review", human_review)
+        graph.add_conditional_edges("compare", _route_interactive, ["human_review", "finalize"])
+        graph.add_edge("human_review", "finalize")
+    else:
+        graph.add_conditional_edges("compare", _route_batch, ["finalize"])
     graph.add_edge("finalize", END)
-    return graph.compile(checkpointer=checkpointer or InMemorySaver())
+    return graph.compile(checkpointer=checkpointer if interactive else None)
+
+
+_batch_graph = None
+_batch_lock = threading.Lock()
+
+
+def run_check(ctx: RunContext) -> CheckResult:
+    """Run the graph without a pause, and return the result (used by every non-interactive path)."""
+    global _batch_graph
+    with _batch_lock:
+        if _batch_graph is None:
+            _batch_graph = build_graph(interactive=False)
+    config = {"configurable": {"run": ctx}, "max_concurrency": MAX_PARALLEL}
+    _batch_graph.invoke({"app_id": ctx.app.app_id}, config)
+    assert ctx.result is not None
+    return ctx.result
+
+
+def compact_path(path: list[str]) -> list[str]:
+    """['select_notes', 'extract_note', 'extract_note'] -> ['select_notes', 'extract_note x2']."""
+    out: list[str] = []
+    for step in path:
+        if out and out[-1].split(" x")[0] == step:
+            count = int(out[-1].split(" x")[1]) + 1 if " x" in out[-1] else 2
+            out[-1] = f"{step} x{count}"
+        else:
+            out.append(step)
+    return out
 
 
 @dataclass
 class Outcome:
-    status: str  # awaiting_review | reviewed | auto_clear
+    status: str  # awaiting_review | reviewed | needs_review | auto_clear
     state: dict[str, Any]
     review_request: dict | None
     result: CheckResult | None
@@ -206,44 +280,91 @@ class Outcome:
 
 
 class CheckWorkflow:
-    """Start a check, and (if it pauses for review) resume it with the reviewer's decisions."""
+    """The interactive graph: start a check, watch it, pause for review, resume, inspect."""
 
     def __init__(self, checkpointer=None):
-        self._graph = build_graph(checkpointer)
+        self.checkpointer = checkpointer or InMemorySaver()
+        self._graph = build_graph(interactive=True, checkpointer=self.checkpointer)
 
     @staticmethod
-    def _config(ctx: RunContext, thread_id: str) -> dict:
-        return {"configurable": {"thread_id": thread_id, "run": ctx}}
+    def _config(ctx: RunContext | None, thread_id: str) -> dict:
+        configurable: dict[str, Any] = {"thread_id": thread_id}
+        if ctx is not None:
+            configurable["run"] = ctx
+        return {"configurable": configurable, "max_concurrency": MAX_PARALLEL}
 
-    def _outcome(self, ctx: RunContext, thread_id: str, output: dict) -> Outcome:
+    def stream(self, ctx: RunContext, thread_id: str) -> Iterator[dict]:
+        """Run to completion or to the review pause, yielding each step as it finishes."""
         config = self._config(ctx, thread_id)
-        state = dict(self._graph.get_state(config).values)
-        pending = output.get("__interrupt__")
-        status = "awaiting_review" if pending else state.get("status", "auto_clear")
+        for update in self._graph.stream({"app_id": ctx.app.app_id}, config, stream_mode="updates"):
+            for node, value in update.items():
+                if node == "__interrupt__":
+                    yield {"node": "human_review", "paused": True, "request": value[0].value}
+                else:
+                    detail = {k: v for k, v in (value or {}).items() if k != "path"}
+                    yield {"node": node, "detail": detail}
+
+    def outcome(self, ctx: RunContext | None, thread_id: str) -> Outcome:
+        snapshot = self._graph.get_state(self._config(ctx, thread_id))
+        state = dict(snapshot.values)
+        paused = bool(snapshot.next)
+        request = None
+        if paused:
+            interrupts = [i for task in snapshot.tasks for i in task.interrupts]
+            request = interrupts[0].value if interrupts else None
         return Outcome(
-            status=status,
+            status="awaiting_review" if paused else state.get("status", "auto_clear"),
             state=state,
-            review_request=pending[0].value if pending else None,
-            result=ctx.result,
-            trace=list(ctx.trace),
+            review_request=request,
+            result=ctx.result if ctx else None,
+            trace=list(state.get("path", [])),
         )
 
     def start(self, ctx: RunContext, thread_id: str) -> Outcome:
-        output = self._graph.invoke({"app_id": ctx.app.app_id}, self._config(ctx, thread_id))
-        return self._outcome(ctx, thread_id, output)
+        for _ in self.stream(ctx, thread_id):
+            pass
+        return self.outcome(ctx, thread_id)
 
-    def resume(self, ctx: RunContext, thread_id: str, decisions: dict[str, str]) -> Outcome:
+    def is_paused(self, thread_id: str) -> bool:
+        return bool(self._graph.get_state(self._config(None, thread_id)).next)
+
+    def resume(self, ctx: RunContext | None, thread_id: str, decisions: dict[str, str]) -> Outcome:
         # Validate BEFORE resuming: once a resume value is delivered, LangGraph keeps it, so a
         # value rejected inside the node would be replayed on every later attempt.
-        shown = {
-            f["id"]
-            for f in self._graph.get_state(self._config(ctx, thread_id)).values.get("flags", [])
+        snapshot = self._graph.get_state(self._config(ctx, thread_id))
+        if not snapshot.next:
+            raise LookupError(f"No paused review for thread {thread_id}")
+        _validate_decisions(decisions, {f["id"] for f in snapshot.values.get("flags", [])})
+        self._graph.invoke(Command(resume={"decisions": decisions}), self._config(ctx, thread_id))
+        return self.outcome(ctx, thread_id)
+
+    def history(self, thread_id: str) -> list[dict]:
+        """Every checkpoint of a run, newest first: what had happened, and what ran next."""
+        snapshots = list(self._graph.get_state_history(self._config(None, thread_id)))
+        return [
+            {
+                "step": s.metadata.get("step"),
+                "next": list(s.next),
+                "created_at": s.created_at,
+                "path": compact_path(s.values.get("path", [])),
+                "flags": len(s.values.get("flags", [])),
+                "notes_read": len(s.values.get("docs_read", [])),
+                "status": s.values.get("status"),
+            }
+            for s in snapshots
+        ]
+
+    def describe(self) -> dict:
+        """The graph's own structure (for the diagram), straight from LangGraph."""
+        drawable = self._graph.get_graph()
+        return {
+            "nodes": list(drawable.nodes),
+            "edges": [
+                {"source": e.source, "target": e.target, "conditional": bool(e.conditional)}
+                for e in drawable.edges
+            ],
+            "mermaid": drawable.draw_mermaid(),
         }
-        _validate_decisions(decisions, shown)
-        output = self._graph.invoke(
-            Command(resume={"decisions": decisions}), self._config(ctx, thread_id)
-        )
-        return self._outcome(ctx, thread_id, output)
 
 
 def main() -> None:
@@ -255,14 +376,21 @@ def main() -> None:
     from crosscheck.rules_extractor import RuleExtractor
 
     parser = argparse.ArgumentParser(description="Run one application through the graph.")
-    parser.add_argument("app_id", help="for example A0001")
+    parser.add_argument("app_id", nargs="?", help="for example A0001")
     parser.add_argument("--data", type=Path, default=Path("data/generated"))
     parser.add_argument("--rag", action="store_true", help="retrieve passages first")
+    parser.add_argument("--mermaid", action="store_true", help="print the graph as Mermaid")
     parser.add_argument(
         "--decide", choices=["Confirm", "Dismiss"], help="resume with this decision"
     )
     args = parser.parse_args()
 
+    workflow = CheckWorkflow()
+    if args.mermaid:
+        print(workflow.describe()["mermaid"])
+        return
+    if not args.app_id:
+        parser.error("app_id is required unless --mermaid is given")
     data = load_demo_data(args.data)
     app = next((a for a in data.applications if a.app_id == args.app_id), None)
     if app is None:
@@ -274,9 +402,10 @@ def main() -> None:
         RuleExtractor(),
         HashingEmbedder() if args.rag else None,
     )
-    workflow = CheckWorkflow()
-    outcome = workflow.start(ctx, thread_id=app.app_id)
-    print("path:", " -> ".join(outcome.trace), "| status:", outcome.status)
+    for step in workflow.stream(ctx, app.app_id):
+        print("  step:", step["node"], "(paused)" if step.get("paused") else "")
+    outcome = workflow.outcome(ctx, app.app_id)
+    print("path:", " -> ".join(compact_path(outcome.trace)), "| status:", outcome.status)
     if outcome.state.get("review_reasons"):
         print("  review because:", ", ".join(outcome.state["review_reasons"]))
     for flag in outcome.state.get("flags", []):

@@ -1,4 +1,4 @@
-"""Run the cross-check for one application: extract, merge, compare, enforce grounding."""
+"""The cross-check for one application. The logic is in `graph.py`; these are its entry points."""
 
 import re
 from collections import defaultdict
@@ -6,20 +6,12 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from crosscheck.applications import Application
-from crosscheck.compare import Flag, compare, ungrounded_flags
+from crosscheck.compare import Flag
 from crosscheck.corpus import LoadedDocument
 from crosscheck.embeddings import Embedder
-from crosscheck.facts import ExtractionResult, PatientFacts, merge_results
+from crosscheck.facts import ExtractionResult, PatientFacts
 from crosscheck.pharmacy import PharmacyRow
-from crosscheck.retrieval import (
-    DEFAULT_K,
-    Index,
-    RetrievalInfo,
-    build_index,
-    queries_for,
-    rank,
-    reduce_documents,
-)
+from crosscheck.retrieval import DEFAULT_K, Index, RetrievalInfo
 
 MRN_PATTERN = re.compile(r"MRN (\d+)")
 
@@ -53,12 +45,10 @@ def check_application(
     pharmacy_rows: list[PharmacyRow],
     extractor: Extractor,
 ) -> CheckResult:
-    results = [extractor.extract(doc.doc_id, doc.text) for doc in docs]
-    facts = merge_results(results)
-    flags = compare(app, facts, pharmacy_rows)
-    dropped = ungrounded_flags(flags, {d.doc_id: d.text for d in docs}, pharmacy_rows)
-    kept = [f for f in flags if f not in dropped]
-    return CheckResult(app.app_id, kept, facts, dropped, results)
+    """Run the check through the LangGraph workflow (batch mode: no pause for review)."""
+    from crosscheck.graph import RunContext, run_check
+
+    return run_check(RunContext(app, docs, pharmacy_rows, extractor))
 
 
 def check_application_rag(
@@ -72,17 +62,6 @@ def check_application_rag(
     index: Index | None = None,
 ) -> CheckResult:
     """Like check_application, but the extractor only reads the retrieved passages."""
-    index = build_index(docs, embedder) if index is None else index
-    queries = queries_for(app)
-    hits = rank(index, embedder, queries, k)
-    reduced = reduce_documents(docs, hits)
-    result = check_application(app, reduced, pharmacy_rows, extractor)
-    result.retrieval = RetrievalInfo(
-        embedder=embedder.name,
-        k=k,
-        queries=queries,
-        hits=hits,
-        chars_total=sum(len(d.text) for d in docs),
-        chars_sent=sum(len(d.text) for d in reduced),
-    )
-    return result
+    from crosscheck.graph import RunContext, run_check
+
+    return run_check(RunContext(app, docs, pharmacy_rows, extractor, embedder, k, index))
