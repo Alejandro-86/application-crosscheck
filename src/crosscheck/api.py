@@ -235,6 +235,12 @@ def create_app(
             "unmapped_declared": unmapped_declared,
             "unmapped_extracted": result.facts.unmapped,
             "facts": _facts_json(result.facts),
+            "declared": {
+                "conditions": application.declared_conditions,
+                "medications": {m.name: m.dose for m in application.declared_medications},
+                "allergies": application.declared_allergies,
+            },
+            "pharmacy": {row.drug: row.dose for row in rows},
         }
 
     @app.get("/api/reviews")

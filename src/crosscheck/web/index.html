@@ -1,83 +1,147 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>Application cross-check</title>
+  <script>
+    // Set the theme before first paint to avoid a flash: saved choice, else the system setting.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("theme"); } catch (e) {}
+      var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.setAttribute("data-theme", saved || (dark ? "dark" : "light"));
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header>
-    <h1>Application cross-check</h1>
-    <p class="disclaimer">
-      Synthetic data only. Flags are data-quality signals for a human reviewer, not underwriting
-      decisions. Every discrepancy cites its evidence; if nothing is found it is shown as
-      unverified, never as a contradiction.
-    </p>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+      </span>
+      <div>
+        <h1>Application cross-check</h1>
+        <p class="sub">Synthetic data only &middot; flags are signals for human review, not decisions</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <label class="inline-select">Extractor
+        <select id="extractor">
+          <option value="rules">Rules (free baseline)</option>
+          <option value="llm" id="llm-option" disabled>LLM (disabled on this server)</option>
+        </select>
+      </label>
+      <span id="llm-pill" class="pill">LLM off</span>
+      <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch to dark mode" aria-pressed="false" title="Toggle dark mode">
+        <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
   </header>
 
-  <main>
-    <section id="inputs" aria-labelledby="inputs-title">
-      <h2 id="inputs-title">Inputs</h2>
-
-      <fieldset>
-        <legend>1. Application</legend>
-        <label>Load a generated application
-          <select id="app-select"></select>
-        </label>
-        <label class="inline"><input type="checkbox" id="only-flawed" checked> only those with planted errors</label>
-        <label>Applicant name <input id="name" maxlength="100"></label>
-        <label>Declared conditions (one per line; abbreviations such as HTN are fine)
-          <textarea id="conditions" rows="4"></textarea>
-        </label>
-        <label>Declared medications (one per line: name and dose in mg, e.g. <code>metformin 500</code>)
-          <textarea id="medications" rows="4"></textarea>
-        </label>
-        <label>Declared allergies (one per line)
-          <textarea id="allergies" rows="2"></textarea>
-        </label>
-      </fieldset>
-
-      <fieldset>
-        <legend>2. Sources</legend>
-        <div id="notes"></div>
-        <button type="button" id="add-note">Add a clinical note</button>
-        <label>Pharmacy rows (one per line: drug, dose, optional date, e.g. <code>metformin 500 2025-03-01</code>)
-          <textarea id="pharmacy" rows="4"></textarea>
-        </label>
-      </fieldset>
-
-      <fieldset>
-        <legend>3. Check</legend>
-        <label>Extractor
-          <select id="extractor">
-            <option value="rules">Rules (free baseline)</option>
-            <option value="llm" id="llm-option" disabled>LLM (disabled on this server)</option>
-          </select>
-        </label>
-        <button type="button" id="check" class="primary">Check application</button>
-        <p id="status" role="status" aria-live="polite"></p>
-      </fieldset>
-    </section>
-
-    <section id="results" aria-labelledby="results-title">
-      <h2 id="results-title">Results</h2>
-      <p id="empty" class="muted">Run a check to see flags here.</p>
-      <div id="warnings"></div>
-      <div id="flags"></div>
-      <details id="facts-box" hidden>
-        <summary>What the extractor found in the notes</summary>
-        <div id="facts"></div>
-      </details>
-      <h3 id="evidence-title" hidden>Evidence in the notes</h3>
-      <div id="evidence"></div>
-      <div id="answer-key-box" hidden>
-        <button type="button" id="reveal">Reveal the answer key (planted errors)</button>
-        <ul id="answer-key"></ul>
+  <div class="layout">
+    <aside class="sidebar" aria-label="Applications">
+      <div class="sidebar-head">
+        <input type="search" id="search" placeholder="Search applications" aria-label="Search applications">
+        <label class="check"><input type="checkbox" id="only-flawed" checked> Only with planted errors</label>
+        <button type="button" id="new-app" class="ghost">+ New blank application</button>
       </div>
-    </section>
-  </main>
+      <ul id="app-list" class="app-list"></ul>
+    </aside>
 
+    <main class="workspace">
+      <section class="panel editor" aria-labelledby="editor-title">
+        <div class="panel-head"><h2 id="editor-title">Inputs</h2><span id="case-label" class="muted"></span></div>
+        <div class="tabs" role="tablist" id="editor-tabs">
+          <button role="tab" type="button" data-tab="application" aria-selected="true">Application</button>
+          <button role="tab" type="button" data-tab="notes" aria-selected="false">Clinical notes</button>
+          <button role="tab" type="button" data-tab="pharmacy" aria-selected="false">Pharmacy</button>
+        </div>
+
+        <div class="tab-panel" data-panel="application">
+          <label class="field">Applicant name
+            <input id="name" maxlength="100" autocomplete="off">
+          </label>
+          <div class="field">
+            <span class="label">Declared conditions</span>
+            <div class="chips-field">
+              <div class="chips" id="conditions-chips"></div>
+              <input id="conditions-input" placeholder="Add a condition, press Enter (HTN works)" aria-label="Add a declared condition" autocomplete="off">
+            </div>
+          </div>
+          <div class="field">
+            <span class="label">Declared medications <span class="muted">(dose in mg)</span></span>
+            <div id="med-rows" class="rows"></div>
+            <button type="button" id="add-med" class="ghost">+ Add medication</button>
+          </div>
+          <div class="field">
+            <span class="label">Declared allergies</span>
+            <div class="chips-field">
+              <div class="chips" id="allergies-chips"></div>
+              <input id="allergies-input" placeholder="Type an allergy, press Enter" aria-label="Add a declared allergy" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" data-panel="notes" hidden>
+          <div id="notes" class="stack"></div>
+          <button type="button" id="add-note" class="ghost">+ Add a clinical note</button>
+        </div>
+
+        <div class="tab-panel" data-panel="pharmacy" hidden>
+          <p class="muted small">Rows from the pharmacy dispensing database: drug, dose in mg, date.</p>
+          <div id="pharm-rows" class="rows"></div>
+          <button type="button" id="add-pharm" class="ghost">+ Add pharmacy row</button>
+        </div>
+      </section>
+
+      <section class="panel results" aria-labelledby="results-title">
+        <div class="panel-head">
+          <h2 id="results-title">Results</h2>
+          <div class="head-actions">
+            <button type="button" id="check" class="primary">Run check <kbd>Ctrl/&#8984; + Enter</kbd></button>
+            <button type="button" id="copy-report" class="ghost" disabled>Copy report</button>
+            <button type="button" id="download-json" class="ghost" disabled>Download JSON</button>
+          </div>
+        </div>
+        <p id="status" role="status" aria-live="polite" class="muted"></p>
+        <div id="stats" class="stats"></div>
+        <div id="warnings"></div>
+
+        <div class="tabs" role="tablist" id="result-tabs">
+          <button role="tab" type="button" data-tab="flags" aria-selected="true">Flags</button>
+          <button role="tab" type="button" data-tab="compare" aria-selected="false">Declared vs record</button>
+          <button role="tab" type="button" data-tab="evidence" aria-selected="false">Evidence in sources</button>
+        </div>
+
+        <div class="tab-panel" data-panel="flags">
+          <p id="empty" class="empty">Choose an application or edit the inputs; the check runs automatically for the rules extractor.</p>
+          <div id="flags"></div>
+        </div>
+        <div class="tab-panel" data-panel="compare" hidden>
+          <div id="compare"></div>
+          <details id="facts-box" hidden>
+            <summary>What the extractor found in the notes</summary>
+            <div id="facts"></div>
+          </details>
+        </div>
+        <div class="tab-panel" data-panel="evidence" hidden>
+          <div id="evidence"></div>
+          <div id="pharm-evidence"></div>
+        </div>
+
+        <div id="answer-key-box" class="answer-key" hidden>
+          <button type="button" id="reveal" class="ghost">Reveal the answer key (planted errors)</button>
+          <ul id="answer-key"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
   <script src="/static/app.js"></script>
 </body>
 </html>
