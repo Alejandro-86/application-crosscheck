@@ -293,6 +293,8 @@ async function selectApp(id) {
     state.form = blankForm();
     setDbInfo("");
     $("case-label").textContent = "Blank application";
+    $("form-box").hidden = true;
+    $("retrieve-results").replaceChildren();
     $("answer-key-box").hidden = true;
     clearResults();
     renderEditor();
@@ -313,6 +315,14 @@ async function selectApp(id) {
     };
     if (!state.form.notes.length) state.form.notes.push({ docId: null, text: "" });
     $("case-label").textContent = `${id} (generated)`;
+    $("form-text").textContent = detail.form_text;
+    $("form-box").hidden = false;
+    const issues = $("form-issues");
+    issues.hidden = !detail.unmapped_declared.length;
+    issues.textContent = detail.unmapped_declared.length
+      ? `The scraper could not map: ${detail.unmapped_declared.join("; ")}. These stay out of the comparison.`
+      : "";
+    $("retrieve-results").replaceChildren();
     setDbInfo(`${detail.pharmacy.length} row(s) read from the pharmacy database for MRN ${detail.mrn}.`);
     $("answer-key-box").hidden = false;
     $("answer-key").replaceChildren();
@@ -327,6 +337,11 @@ async function selectApp(id) {
 }
 
 /* checking */
+function topK() {
+  const value = Number($("top-k").value);
+  return Number.isInteger(value) && value >= 1 && value <= 10 ? value : 3;
+}
+
 function buildPayload() {
   const form = state.form;
   const medications = [];
@@ -366,6 +381,8 @@ function buildPayload() {
       notes,
       pharmacy,
       extractor: $("extractor").value,
+      retrieval: $("retrieval").value,
+      top_k: topK(),
     },
   };
 }
@@ -390,7 +407,8 @@ async function runCheck() {
     renderResult();
     renderSidebar();
     const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setStatus(`Checked at ${when} with the ${result.extractor} extractor.`);
+    const read = result.retrieval ? ` reading ${Math.round((100 * result.retrieval.chars_sent) / Math.max(1, result.retrieval.chars_total))}% of the note text (RAG)` : "";
+    setStatus(`Checked at ${when} with the ${result.extractor} extractor${read}.`);
   } catch (error) {
     if (token === state.seq) setStatus(error.message, true);
   } finally {
@@ -402,7 +420,7 @@ function clearResults() {
   state.result = null;
   state.resultNotes = [];
   state.filter = null;
-  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence"]) $(id).replaceChildren();
+  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence", "retrieval-info"]) $(id).replaceChildren();
   $("empty").hidden = false;
   $("facts-box").hidden = true;
   $("copy-report").disabled = true;
@@ -668,8 +686,71 @@ function renderResult() {
   renderCompare();
   renderFacts();
   renderEvidence();
+  renderRetrievalTab();
   $("copy-report").disabled = false;
   $("download-json").disabled = false;
+}
+
+function passageRow(hit) {
+  return el(
+    "div",
+    { class: "passage" },
+    el("span", { class: "where", text: `${hit.doc_id} · line ${hit.line + 1}` }),
+    el("span", { class: "text", text: hit.text }),
+    el("span", { class: "score", text: hit.score.toFixed(2), title: `Matched: ${hit.queries.join(" | ")}` }),
+  );
+}
+
+function renderRetrievalTab() {
+  const box = $("retrieval-info");
+  box.replaceChildren();
+  const info = state.result.retrieval;
+  if (!info) {
+    box.append(el("p", { class: "empty", text: "The extractor read all of the note text. Set \"Notes read\" to Retrieved passages (RAG) to see which lines are retrieved." }));
+    return;
+  }
+  const share = Math.round((100 * info.chars_sent) / Math.max(1, info.chars_total));
+  box.append(el("p", {}, el("strong", { text: `${share}% of the note text was sent to the extractor` }), document.createTextNode(` (${info.chars_sent} of ${info.chars_total} characters). Top ${info.k} passages for each of ${info.queries.length} queries, ranked by embedding similarity (${info.embedder}).`)));
+  const meter = el("div", { class: "meter" }, el("span"));
+  meter.firstChild.style.width = `${share}%`;
+  box.append(meter);
+  const sent = new Set(info.hits.map((h) => `${h.doc_id}|${h.line}`));
+  state.resultNotes.forEach((note, index) => {
+    const id = note.doc_id || `N${index + 1}`;
+    const card = el("div", { class: "evidence-note" }, el("div", { class: "title", text: `Note ${id}: sent lines are highlighted, struck-through lines were not read` }));
+    note.text.split("\n").map((line) => line.trim()).filter(Boolean).forEach((line, lineIndex) => {
+      card.append(el("span", { class: sent.has(`${id}|${lineIndex}`) ? "sent-line" : "skipped-line", text: line }));
+    });
+    box.append(card);
+  });
+  box.append(el("h3", { text: "Passages and their scores" }));
+  for (const hit of info.hits) box.append(passageRow(hit));
+  if (!info.hits.length) box.append(el("p", { class: "empty", text: "Nothing in the notes matched the queries." }));
+}
+
+async function searchRecord() {
+  const box = $("retrieve-results");
+  if (!state.appId) {
+    toast("Choose a stored application first: its notes are indexed in the database.", "error");
+    return;
+  }
+  const query = $("retrieve-input").value.trim();
+  try {
+    const params = new URLSearchParams({ k: String(topK()) });
+    if (query) params.set("q", query);
+    const found = await api(`/api/applications/${encodeURIComponent(state.appId)}/retrieve?${params}`);
+    box.replaceChildren();
+    const share = Math.round((100 * found.chars_sent) / Math.max(1, found.chars_total));
+    box.append(el("p", { class: "muted small", text: query
+      ? `Top ${found.k} passages for "${query}" (${found.embedder}).`
+      : `A check reads these passages: ${share}% of this applicant's note text, from ${found.queries.length} queries (${found.embedder}).` }));
+    for (const hit of found.hits) box.append(passageRow(hit));
+    if (!found.hits.length) {
+      box.append(el("p", { class: "empty", text: "No passage matched. The offline embedder matches words plus known abbreviations and brand names (HTN = hypertension); only a real embedding model also matches paraphrases." }));
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  }
 }
 
 /* export */
@@ -738,6 +819,17 @@ async function init() {
   $("copy-report").addEventListener("click", copyReport);
   $("download-json").addEventListener("click", downloadJson);
   $("reveal").addEventListener("click", revealAnswerKey);
+  $("retrieve-btn").addEventListener("click", searchRecord);
+  $("retrieve-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); searchRecord(); }
+  });
+  const onRetrievalChange = () => {
+    $("top-k-label").hidden = $("retrieval").value !== "rag";
+    markDirty();
+  };
+  $("retrieval").addEventListener("change", onRetrievalChange);
+  $("top-k").addEventListener("change", markDirty);
+  $("top-k-label").hidden = true;
   $("extractor").addEventListener("change", () => {
     if ($("extractor").value === "rules") runCheck();
     else setStatus("Model extractor selected. Press Run check (uses API credits).");
@@ -752,6 +844,13 @@ async function init() {
     const [health, apps, reviews] = await Promise.all([api("/api/health"), api("/api/applications"), api("/api/reviews")]);
     state.apps = apps;
     state.reviews = reviews;
+    if (health.store) {
+      const st = health.store;
+      const pill = $("store-pill");
+      pill.textContent = `Store: ${st.applications} forms · ${st.notes} notes · ${st.chunks} passages`;
+      pill.title = `Embedder: ${st.embedder}. Parser issues: ${st.errors} errors, ${st.issues - st.errors} warnings.`;
+      pill.classList.toggle("on", st.errors === 0);
+    }
     if (health.pharmacy) {
       setDbInfo(`Pharmacy database: ${health.pharmacy.rows} dispensing rows for ${health.pharmacy.patients} applicants.`);
     }

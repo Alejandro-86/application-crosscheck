@@ -42,3 +42,21 @@ def test_pharmacy_lookup_controls_exist_in_the_page():
     page = (WEB / "index.html").read_text(encoding="utf-8")
     for element_id in ("mrn-input", "load-pharmacy", "db-info"):
         assert f'id="{element_id}"' in page, element_id
+
+
+def test_raw_form_and_retrieval_controls_exist_in_the_page():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    for element_id in (
+        "form-box",
+        "form-text",
+        "form-issues",
+        "retrieve-input",
+        "retrieve-btn",
+        "retrieve-results",
+        "retrieval",
+        "top-k",
+        "store-pill",
+        "retrieval-info",
+    ):
+        assert f'id="{element_id}"' in page, element_id
+    assert 'data-tab="retrieval"' in page and 'data-panel="retrieval"' in page

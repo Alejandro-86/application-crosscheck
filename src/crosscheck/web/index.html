@@ -34,6 +34,16 @@
           <option value="llm" id="llm-option" disabled>LLM (disabled on this server)</option>
         </select>
       </label>
+      <label class="inline-select">Notes read
+        <select id="retrieval">
+          <option value="all">All text</option>
+          <option value="rag">Retrieved passages (RAG)</option>
+        </select>
+      </label>
+      <label class="inline-select" id="top-k-label">top-k
+        <input id="top-k" type="number" min="1" max="10" value="3" aria-label="Passages per query">
+      </label>
+      <span id="store-pill" class="pill" title="Rows the ingestion step loaded into the application store">Store: loading</span>
       <span id="llm-pill" class="pill">LLM off</span>
       <button type="button" id="theme-toggle" class="icon-btn" aria-label="Switch to dark mode" aria-pressed="false" title="Toggle dark mode">
         <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -84,9 +94,21 @@
               <input id="allergies-input" placeholder="Type an allergy, press Enter" aria-label="Add a declared allergy" autocomplete="off">
             </div>
           </div>
+          <details id="form-box" hidden>
+            <summary>Original application form (raw text, as scraped into the database)</summary>
+            <p id="form-issues" class="warning" hidden></p>
+            <pre id="form-text" class="raw"></pre>
+          </details>
         </div>
 
         <div class="tab-panel" data-panel="notes" hidden>
+          <div class="db-lookup">
+            <label class="field">Search this applicant's record (embeddings)
+              <input id="retrieve-input" placeholder="e.g. hypertension, metformin, allergies; empty shows what a check reads" autocomplete="off" maxlength="200">
+            </label>
+            <button type="button" id="retrieve-btn" class="ghost">Search</button>
+          </div>
+          <div id="retrieve-results" class="retrieve"></div>
           <div id="notes" class="stack"></div>
           <button type="button" id="add-note" class="ghost">+ Add a clinical note</button>
         </div>
@@ -121,6 +143,7 @@
           <button role="tab" type="button" data-tab="flags" aria-selected="true">Flags</button>
           <button role="tab" type="button" data-tab="compare" aria-selected="false">Declared vs record</button>
           <button role="tab" type="button" data-tab="evidence" aria-selected="false">Evidence in sources</button>
+          <button role="tab" type="button" data-tab="retrieval" aria-selected="false">Retrieval</button>
         </div>
 
         <div class="tab-panel" data-panel="flags">
@@ -137,6 +160,10 @@
         <div class="tab-panel" data-panel="evidence" hidden>
           <div id="evidence"></div>
           <div id="pharm-evidence"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="retrieval" hidden>
+          <div id="retrieval-info"></div>
         </div>
 
         <div id="answer-key-box" class="answer-key" hidden>
