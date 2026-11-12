@@ -104,7 +104,25 @@ Findings:
 - **The loss was the terminology table, not the model.** All 17 missed conditions were wordings the table does not know ("persistently low mood", "irregular pulse"). The model found and quoted them; the table could not map them, so they were reported as unmapped and left out of the comparison.
 - **The closed-list mapper helped little, on purpose.** It mapped the one unambiguous wording ("raised pressure readings" to hypertension, correct) and answered "none" for four vague ones that are symptoms rather than diagnoses ("irregular pulse" is not atrial fibrillation). The generator's labels treat those as the diagnosis, so they are generous. The prompt was deliberately not loosened to raise the score on my own labels.
 - **A miss now shows up where a reviewer will see it.** The 5 false `unverified_declaration` flags (declared depression, note says "persistently low mood") now say which note terms the system could not map, so the reviewer reads the note instead of trusting "not found".
-- **Caveats:** one small model, one run each, 100 applications, synthetic and partly self-authored wordings. The LLM has not been compared across model tiers, and the OpenAI embedder has not been run. To reproduce: `python -m crosscheck.evaluate --extractor llm --limit 100 [--mapper llm] --out docs/results-llm.md` (a few cents).
+- **Caveats:** one small model, one run each, 100 applications, synthetic and partly self-authored wordings. The LLM has not been compared across model tiers. To reproduce: `python -m crosscheck.evaluate --extractor llm --limit 100 [--mapper llm] --out docs/results-llm.md` (a few cents).
+
+### Offline vs OpenAI embeddings (the model reads only retrieved passages)
+
+The same 100 hard applications and the same small model, with retrieval in front of the extractor (top-k passages per query). Embedding all 5,873 passages with OpenAI `text-embedding-3-small` cost about $0.002. One run each.
+
+| Retrieval | Text sent | Condition recall | Medication recall | Flag precision / recall | Report |
+|---|---|---|---|---|---|
+| None: all text | 100% | 0.948 | 1.000 | 0.956 / 1.000 | [results-llm-luna-hard.md](docs/results-llm-luna-hard.md) |
+| Offline, top-1 | 58% | 0.822 | 0.841 | 0.956 / 1.000 | [report](docs/results-llm-rag-hashing-k1.md) |
+| OpenAI, top-1 | 61% | 0.809 | 0.862 | 0.956 / 1.000 | [report](docs/results-llm-rag-openai-k1.md) |
+| Offline, top-3 | 70% | 0.948 | 1.000 | 0.956 / 1.000 | [report](docs/results-llm-rag-hashing-k3.md) |
+| OpenAI, top-3 | 85% | 0.942 | 0.990 | 0.956 / 1.000 | [report](docs/results-llm-rag-openai-k3.md) |
+
+- **Flag results are identical in every row**, even at top-1 with 42% of the text removed: each patient has several notes that repeat the same facts, so a passage skipped in one note is usually read in another.
+- **Per-fact extraction does suffer at top-1** (recall about 0.8 on every fact type) and is fully recovered at top-3 with the offline embedder. Top-1 is a cheap setting whose losses are hidden by redundancy.
+- **OpenAI embeddings did not beat the free offline ones here**, and sent more text (85% vs 70% at top-3): dense embeddings give every passage some similarity, so top-k always takes k passages, while the offline embedder drops anything scoring zero. A dense retriever needs a similarity threshold, which is not implemented.
+- **This data cannot separate the embedders.** A narrative letter is one paragraph, so it is one passage: retrieval keeps the whole letter or none of it, and the paraphrase matching a neural model should help with never comes into play. The 17 lost conditions come from the terminology table, not retrieval. A test that would discriminate needs sentence-level passages and queries that share no words with the notes.
+
 
 ## Web app and API
 
