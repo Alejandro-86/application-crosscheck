@@ -18,6 +18,7 @@ class Fact:
     quote: str
     doc_id: str
     raw: str = ""
+    via_model: bool = False  # canonical term chosen by the model fallback, not the table
     dose: int | None = None
     unit: str | None = None
 
@@ -29,6 +30,7 @@ class ExtractionResult:
     unmapped: list[str] = field(default_factory=list)  # terms with no canonical mapping
     ungrounded: list[str] = field(default_factory=list)  # quotes not found in the text (dropped)
     attempts: int = 1
+    remapped: list[str] = field(default_factory=list)  # "term -> canonical" via the model
 
 
 @dataclass

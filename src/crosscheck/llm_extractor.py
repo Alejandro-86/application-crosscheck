@@ -12,6 +12,7 @@ import re
 
 from crosscheck.facts import ExtractionResult, Fact
 from crosscheck.llm import ChatClient
+from crosscheck.mapper import ConceptMapper
 from crosscheck.terminology import normalise_allergy, normalise_condition, normalise_drug
 
 MAX_RETRIES = 2
@@ -59,9 +60,15 @@ def _squash(text: str) -> str:
 
 
 class LLMExtractor:
-    def __init__(self, chat: ChatClient, max_retries: int = MAX_RETRIES):
+    def __init__(
+        self,
+        chat: ChatClient,
+        max_retries: int = MAX_RETRIES,
+        mapper: ConceptMapper | None = None,
+    ):
         self._chat = chat
         self._max_retries = max_retries
+        self._mapper = mapper
 
     def extract(self, doc_id: str, text: str) -> ExtractionResult:
         messages = [
@@ -92,8 +99,7 @@ class LLMExtractor:
             messages.append({"role": "user", "content": problem})
         return best
 
-    @staticmethod
-    def _build(doc_id: str, text: str, data: dict) -> ExtractionResult:
+    def _build(self, doc_id: str, text: str, data: dict) -> ExtractionResult:
         result = ExtractionResult(doc_id=doc_id)
         haystack = _squash(text)
         for key, kind in LISTS.items():
@@ -106,6 +112,11 @@ class LLMExtractor:
                     result.ungrounded.append(quote or raw or "(empty)")
                     continue
                 fact = _to_fact(kind, raw, quote, doc_id, item)
+                if fact is None and self._mapper and kind != "allergy":
+                    mapped = self._mapper.map(_MAP_KIND[kind], raw, quote)
+                    if mapped:
+                        fact = _to_fact(kind, raw, quote, doc_id, item, canonical=mapped)
+                        result.remapped.append(f"{raw} -> {mapped}")
                 if fact is None:
                     result.unmapped.append(raw)
                 else:
@@ -113,8 +124,19 @@ class LLMExtractor:
         return result
 
 
-def _to_fact(kind: str, raw: str, quote: str, doc_id: str, item: dict) -> Fact | None:
-    if kind in ("condition", "negated_condition"):
+_MAP_KIND = {
+    "condition": "condition",
+    "negated_condition": "condition",
+    "medication": "medication",
+}
+
+
+def _to_fact(
+    kind: str, raw: str, quote: str, doc_id: str, item: dict, canonical: str | None = None
+) -> Fact | None:
+    if canonical is not None:
+        value = canonical
+    elif kind in ("condition", "negated_condition"):
         value = normalise_condition(raw)
     elif kind == "medication":
         value = normalise_drug(raw.split()[0]) if raw.split() else None
@@ -128,4 +150,13 @@ def _to_fact(kind: str, raw: str, quote: str, doc_id: str, item: dict) -> Fact |
             dose = int(float(item["dose_mg"])) if item.get("dose_mg") is not None else None
         except (TypeError, ValueError):
             dose = None
-    return Fact(kind, value, quote, doc_id, raw, dose=dose, unit="mg" if dose is not None else None)
+    return Fact(
+        kind,
+        value,
+        quote,
+        doc_id,
+        raw,
+        via_model=canonical is not None,
+        dose=dose,
+        unit="mg" if dose is not None else None,
+    )
