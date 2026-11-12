@@ -31,6 +31,7 @@ class Flag:
     evidence: list[Evidence] = field(default_factory=list)
     declared: str | None = None
     checked_docs: list[str] = field(default_factory=list)
+    unmapped: list[str] = field(default_factory=list)  # terms the system could not read
 
     @property
     def severity(self) -> str:
@@ -39,6 +40,14 @@ class Flag:
     @property
     def key(self) -> tuple[str, str]:
         return (self.type, self.field)
+
+
+def _review_hint(terms: list[str]) -> str:
+    if not terms:
+        return ""
+    return (
+        " The notes contain terms the system could not map, so read them: " + "; ".join(terms) + "."
+    )
 
 
 def pharmacy_evidence(row: PharmacyRow) -> Evidence:
@@ -84,9 +93,11 @@ def _compare_conditions(app: Application, facts: PatientFacts) -> list[Flag]:
                     "unverified_declaration",
                     condition,
                     f"The application declares {condition}; it was not found in the notes "
-                    "(absence is not proof).",
+                    "(absence is not proof)."
+                    + _review_hint(facts.unmapped_by_kind.get("condition", [])),
                     declared=condition,
                     checked_docs=facts.doc_ids,
+                    unmapped=facts.unmapped_by_kind.get("condition", []),
                 )
             )
     return flags
@@ -114,9 +125,11 @@ def _compare_medications(
                     Flag(
                         "unverified_medication",
                         drug,
-                        f"The application declares {label}; no source mentions it.",
+                        f"The application declares {label}; no source mentions it."
+                        + _review_hint(facts.unmapped_by_kind.get("medication", [])),
                         declared=label,
                         checked_docs=facts.doc_ids,
+                        unmapped=facts.unmapped_by_kind.get("medication", []),
                     )
                 )
             elif all_doses and dose not in all_doses:

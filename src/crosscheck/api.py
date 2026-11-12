@@ -151,6 +151,7 @@ def _flag_json(app_id: str, flag: Flag) -> dict:
         "message": flag.message,
         "declared": flag.declared,
         "checked_docs": flag.checked_docs,
+        "unmapped": flag.unmapped,
         "evidence": [asdict(e) for e in flag.evidence],
     }
 

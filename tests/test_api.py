@@ -291,3 +291,12 @@ def test_an_embedder_that_is_not_allowed_is_a_403_not_a_crash(data_dir):
     app = TestClient(create_app(data_dir, allow_llm=False, embedder_factory=refuse))
     assert app.get("/api/applications/A0002/retrieve").status_code == 403
     assert app.post("/api/check", json=adhoc(retrieval="rag")).status_code == 403
+
+
+def test_unverified_flag_tells_the_reviewer_which_note_terms_could_not_be_read(client):
+    body = adhoc(notes=[{"text": "Patient: T (MRN 1), 40-year-old male\nDiagnoses: flarbitis.\n"}])
+    body["application"]["conditions"] = ["asthma"]
+    result = client.post("/api/check", json=body).json()
+    flag = next(f for f in result["flags"] if f["type"] == "unverified_declaration")
+    assert flag["unmapped"] == ["flarbitis"]
+    assert "flarbitis" in flag["message"] and "could not map" in flag["message"]
