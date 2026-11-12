@@ -6,6 +6,7 @@ from pathlib import Path
 
 from crosscheck.applications import Application, application_from_dict
 from crosscheck.pharmacy import PharmacyRow
+from crosscheck.pharmacy_db import PharmacyDB, ensure_db
 from crosscheck.synthetic import Patient, patient_from_dict
 
 
@@ -49,5 +50,4 @@ def load_applications(data_dir: Path) -> list[Application]:
 
 
 def load_pharmacy(data_dir: Path) -> list[PharmacyRow]:
-    raw = json.loads((data_dir / "pharmacy.json").read_text(encoding="utf-8"))
-    return [PharmacyRow(**r) for r in raw]
+    return PharmacyDB(ensure_db(data_dir)).all_rows()

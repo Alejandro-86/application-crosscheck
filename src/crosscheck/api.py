@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -23,6 +24,7 @@ from crosscheck.costs import BudgetExceededError
 from crosscheck.demo_helpers import flag_id, load_demo_data, load_reviews, save_review
 from crosscheck.facts import PatientFacts
 from crosscheck.pharmacy import PharmacyRow
+from crosscheck.pharmacy_db import PharmacyDB, ensure_db
 from crosscheck.pipeline import Extractor, check_application
 from crosscheck.rules_extractor import RuleExtractor
 from crosscheck.terminology import normalise_allergy, normalise_condition, normalise_drug
@@ -101,6 +103,15 @@ def _flag_json(app_id: str, flag: Flag) -> dict:
     }
 
 
+def _row_json(row: PharmacyRow) -> dict:
+    return {
+        "drug": row.drug,
+        "dose": row.dose,
+        "unit": row.unit,
+        "last_dispensed": row.last_dispensed,
+    }
+
+
 def _facts_json(facts: PatientFacts) -> dict:
     return {
         "conditions": sorted(facts.conditions),
@@ -163,6 +174,7 @@ def create_app(
     factory = extractor_factory or default_extractor_factory
     llm_enabled = os.environ.get("ALLOW_LLM") == "1" if allow_llm is None else allow_llm
     data = load_demo_data(data_dir)
+    pharmacy_db = PharmacyDB(ensure_db(data_dir))
     by_id = {a.app_id: a for a in data.applications}
     reviews_path = data_dir / "reviews.json"
     app = FastAPI(
@@ -171,7 +183,12 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"status": "ok", "llm_enabled": llm_enabled, "applications": len(by_id)}
+        return {
+            "status": "ok",
+            "llm_enabled": llm_enabled,
+            "applications": len(by_id),
+            "pharmacy": pharmacy_db.counts(),
+        }
 
     @app.get("/api/applications")
     def list_applications() -> list[dict]:
@@ -190,6 +207,7 @@ def create_app(
         found = _find(app_id)
         return {
             "app_id": found.app_id,
+            "mrn": found.mrn,
             "application": {
                 "name": found.name,
                 "conditions": found.declared_conditions,
@@ -199,11 +217,12 @@ def create_app(
             "notes": [
                 {"doc_id": d.doc_id, "text": d.text} for d in data.docs_by_mrn.get(found.mrn, [])
             ],
-            "pharmacy": [
-                {"drug": r.drug, "dose": r.dose, "unit": r.unit, "last_dispensed": r.last_dispensed}
-                for r in data.pharmacy_by_mrn.get(found.mrn, [])
-            ],
+            "pharmacy": [_row_json(r) for r in pharmacy_db.rows_for_mrn(found.mrn)],
         }
+
+    @app.get("/api/pharmacy/{mrn}")
+    def pharmacy_rows(mrn: str = PathParam(pattern=r"^[A-Za-z0-9_-]{1,20}$")) -> dict:
+        return {"mrn": mrn, "rows": [_row_json(r) for r in pharmacy_db.rows_for_mrn(mrn)]}
 
     @app.get("/api/applications/{app_id}/answer-key")
     def answer_key(app_id: str) -> list[dict]:

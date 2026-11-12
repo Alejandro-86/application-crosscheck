@@ -31,7 +31,7 @@ const state = {
 };
 
 function blankForm() {
-  return { name: "", conditions: [], medications: [], allergies: [], notes: [{ docId: null, text: "" }], pharmacy: [] };
+  return { name: "", mrn: "", conditions: [], medications: [], allergies: [], notes: [{ docId: null, text: "" }], pharmacy: [] };
 }
 
 function el(tag, props = {}, ...children) {
@@ -248,11 +248,40 @@ function renderNotes() {
 
 function renderEditor() {
   $("name").value = state.form.name;
+  $("mrn-input").value = state.form.mrn || "";
   renderChips("conditions");
   renderChips("allergies");
   renderMedRows();
   renderPharmRows();
   renderNotes();
+}
+
+function setDbInfo(message) {
+  $("db-info").textContent = message;
+}
+
+async function loadPharmacyFromDb() {
+  const mrn = $("mrn-input").value.trim();
+  if (!mrn) {
+    toast("Enter an applicant ID (MRN) first.", "error");
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]{1,20}$/.test(mrn)) {
+    toast("Applicant IDs use letters, digits, - and _ (up to 20 characters).", "error");
+    return;
+  }
+  try {
+    const found = await api(`/api/pharmacy/${encodeURIComponent(mrn)}`);
+    state.form.mrn = mrn;
+    state.form.pharmacy = found.rows.map((r) => ({ drug: r.drug, dose: String(r.dose), date: r.last_dispensed }));
+    renderPharmRows();
+    setDbInfo(found.rows.length
+      ? `${found.rows.length} row(s) read from the pharmacy database for MRN ${mrn}.`
+      : `No rows for MRN ${mrn} in the pharmacy database.`);
+    markDirty();
+  } catch (error) {
+    toast(error.message, "error");
+  }
 }
 
 /* data loading */
@@ -262,6 +291,7 @@ async function selectApp(id) {
   if (id === null) {
     state.appId = null;
     state.form = blankForm();
+    setDbInfo("");
     $("case-label").textContent = "Blank application";
     $("answer-key-box").hidden = true;
     clearResults();
@@ -274,6 +304,7 @@ async function selectApp(id) {
     state.appId = id;
     state.form = {
       name: detail.application.name,
+      mrn: detail.mrn,
       conditions: [...detail.application.conditions],
       medications: detail.application.medications.map((m) => ({ name: m.name, dose: String(m.dose) })),
       allergies: [...detail.application.allergies],
@@ -282,6 +313,7 @@ async function selectApp(id) {
     };
     if (!state.form.notes.length) state.form.notes.push({ docId: null, text: "" });
     $("case-label").textContent = `${id} (generated)`;
+    setDbInfo(`${detail.pharmacy.length} row(s) read from the pharmacy database for MRN ${detail.mrn}.`);
     $("answer-key-box").hidden = false;
     $("answer-key").replaceChildren();
     clearResults();
@@ -695,6 +727,11 @@ async function init() {
   $("add-pharm").addEventListener("click", () => { state.form.pharmacy.push({ drug: "", dose: "", date: "" }); renderPharmRows(); });
   $("add-note").addEventListener("click", () => { state.form.notes.push({ docId: null, text: "" }); renderNotes(); showTab("editor-tabs", "notes"); });
   $("new-app").addEventListener("click", () => selectApp(null));
+  $("mrn-input").addEventListener("input", () => { state.form.mrn = $("mrn-input").value; });
+  $("mrn-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); loadPharmacyFromDb(); }
+  });
+  $("load-pharmacy").addEventListener("click", loadPharmacyFromDb);
   $("search").addEventListener("input", renderSidebar);
   $("only-flawed").addEventListener("change", renderSidebar);
   $("check").addEventListener("click", runCheck);
@@ -715,6 +752,9 @@ async function init() {
     const [health, apps, reviews] = await Promise.all([api("/api/health"), api("/api/applications"), api("/api/reviews")]);
     state.apps = apps;
     state.reviews = reviews;
+    if (health.pharmacy) {
+      setDbInfo(`Pharmacy database: ${health.pharmacy.rows} dispensing rows for ${health.pharmacy.patients} applicants.`);
+    }
     if (health.llm_enabled) {
       const option = $("llm-option");
       option.disabled = false;

@@ -16,6 +16,7 @@ from crosscheck.corpus import (
 )
 from crosscheck.generate import generate_all
 from crosscheck.pharmacy import PharmacyRow
+from crosscheck.pharmacy_db import ensure_db
 from crosscheck.pipeline import index_documents
 
 SEVERITY_ORDER = ["discrepancy", "data_quality", "unverified"]
@@ -34,7 +35,7 @@ class DemoData:
 
 
 def load_demo_data(data_dir: Path) -> DemoData:
-    if not (data_dir / "applications.json").exists():
+    if not (data_dir / "applications.json").exists() or not ensure_db(data_dir).exists():
         generate_all(data_dir)
     pharmacy: dict[str, list[PharmacyRow]] = defaultdict(list)
     for row in load_pharmacy(data_dir):

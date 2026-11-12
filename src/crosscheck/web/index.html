@@ -92,7 +92,13 @@
         </div>
 
         <div class="tab-panel" data-panel="pharmacy" hidden>
-          <p class="muted small">Rows from the pharmacy dispensing database: drug, dose in mg, date.</p>
+          <div class="db-lookup">
+            <label class="field">Applicant ID (MRN) in the pharmacy database
+              <input id="mrn-input" inputmode="numeric" placeholder="e.g. 126225" autocomplete="off">
+            </label>
+            <button type="button" id="load-pharmacy" class="ghost">Load from database</button>
+          </div>
+          <p id="db-info" class="muted small"></p>
           <div id="pharm-rows" class="rows"></div>
           <button type="button" id="add-pharm" class="ghost">+ Add pharmacy row</button>
         </div>

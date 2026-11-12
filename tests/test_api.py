@@ -177,3 +177,35 @@ def test_reviews_round_trip(data_dir):
 def test_index_is_served(client):
     response = client.get("/")
     assert response.status_code == 200 and "<html" in response.text
+
+
+def test_application_detail_reads_pharmacy_rows_from_the_database(data_dir):
+    from crosscheck.pharmacy_db import PharmacyDB, db_path
+
+    client = TestClient(create_app(data_dir, allow_llm=False))
+    db = PharmacyDB(db_path(data_dir))
+    for app_id in ("A0001", "A0002", "A0003"):
+        detail = client.get(f"/api/applications/{app_id}").json()
+        expected = [
+            {"drug": r.drug, "dose": r.dose, "unit": r.unit, "last_dispensed": r.last_dispensed}
+            for r in db.rows_for_mrn(detail["mrn"])
+        ]
+        assert detail["pharmacy"] == expected
+
+
+def test_pharmacy_lookup_endpoint(client):
+    mrn = client.get("/api/applications/A0001").json()["mrn"]
+    found = client.get(f"/api/pharmacy/{mrn}").json()
+    assert found["mrn"] == mrn
+    assert found["rows"] == client.get("/api/applications/A0001").json()["pharmacy"]
+    assert client.get("/api/pharmacy/000000").json() == {"mrn": "000000", "rows": []}
+
+
+@pytest.mark.parametrize("bad", ["a b", "x" * 21, "1;DROP", "%27OR%271"])
+def test_pharmacy_lookup_rejects_odd_identifiers(client, bad):
+    assert client.get(f"/api/pharmacy/{bad}").status_code in (404, 422)
+
+
+def test_health_reports_database_counts(client):
+    health = client.get("/api/health").json()
+    assert health["pharmacy"]["rows"] > 0 and health["pharmacy"]["patients"] > 0
