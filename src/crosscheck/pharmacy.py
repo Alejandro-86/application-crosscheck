@@ -6,7 +6,7 @@ genuinely disagree.
 """
 
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from crosscheck.synthetic import MED_CATALOG, Patient
@@ -39,7 +39,3 @@ def generate_pharmacy(patients: list[Patient], seed: int = 42) -> list[PharmacyR
             when = date(2025, 1, 1) + timedelta(days=rng.randrange(0, 365))
             rows.append(PharmacyRow(patient.mrn, med.name, dose, med.unit, when.isoformat()))
     return rows
-
-
-def pharmacy_to_dicts(rows: list[PharmacyRow]) -> list[dict]:
-    return [asdict(r) for r in rows]

@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 
 from crosscheck.applications import applications_to_dicts, generate_applications
-from crosscheck.pharmacy import generate_pharmacy, pharmacy_to_dicts
+from crosscheck.pharmacy import generate_pharmacy
+from crosscheck.pharmacy_db import create_db, db_path
 from crosscheck.synthetic import generate_corpus, write_corpus
 
 
@@ -20,12 +21,12 @@ def generate_all(out: Path, n_docs: int = 200, seed: int = 42) -> str:
     write_corpus(patients, documents, out)
     pharmacy = generate_pharmacy(patients, seed)
     applications = generate_applications(patients, documents, pharmacy, seed)
-    _dump(out / "pharmacy.json", pharmacy_to_dicts(pharmacy))
+    create_db(db_path(out), pharmacy)
     _dump(out / "applications.json", applications_to_dicts(applications))
     planted = sum(len(a.planted_errors) for a in applications)
     return (
-        f"Wrote {len(documents)} notes, {len(patients)} patients, {len(pharmacy)} pharmacy rows "
-        f"and {len(applications)} applications ({planted} planted errors) to {out}"
+        f"Wrote {len(documents)} notes, {len(patients)} patients, {len(applications)} applications "
+        f"({planted} planted errors) and a pharmacy database with {len(pharmacy)} rows to {out}"
     )
 
 
