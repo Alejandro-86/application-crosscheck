@@ -2,7 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from crosscheck.api import create_app
+from crosscheck.embeddings import HashingEmbedder
 from crosscheck.generate import generate_all
+from crosscheck.ingest import ingest
 from crosscheck.rules_extractor import RuleExtractor
 
 NOTE = (
@@ -19,6 +21,7 @@ NOTE = (
 def data_dir(tmp_path_factory):
     out = tmp_path_factory.mktemp("api-data")
     generate_all(out, n_docs=80, seed=3)
+    ingest(out, HashingEmbedder())
     return out
 
 
@@ -209,3 +212,82 @@ def test_pharmacy_lookup_rejects_odd_identifiers(client, bad):
 def test_health_reports_database_counts(client):
     health = client.get("/api/health").json()
     assert health["pharmacy"]["rows"] > 0 and health["pharmacy"]["patients"] > 0
+
+
+def test_detail_includes_the_raw_form_and_notes_read_from_the_store(client):
+    detail = client.get("/api/applications/A0001").json()
+    assert detail["form_text"].startswith("LIFE INSURANCE APPLICATION")
+    assert "Reference: A0001" in detail["form_text"]
+    assert detail["unmapped_declared"] == []
+    assert all("MRN " + detail["mrn"] in n["text"] for n in detail["notes"])
+
+
+def test_declared_terms_are_shown_as_the_applicant_wrote_them(client):
+    forms = [client.get(f"/api/applications/A{i:04d}").json() for i in range(1, 40)]
+    written = {c for f in forms for c in f["application"]["conditions"]}
+    assert "HTN" in written or "COPD" in written  # abbreviations survive, not canonicalised
+
+
+def test_health_reports_the_store(client):
+    store = client.get("/api/health").json()["store"]
+    assert store["applications"] > 10 and store["chunks"] > store["notes"]
+    assert store["embedder"].startswith("hashing-v2-") and store["errors"] == 0
+
+
+def test_ingest_issues_endpoint(client):
+    body = client.get("/api/ingest/issues").json()
+    assert body["issues"] == [] and body["meta"]["embedder"].startswith("hashing")
+
+
+def test_retrieve_shows_what_a_check_would_read(client):
+    result = client.get("/api/applications/A0002/retrieve").json()
+    assert result["hits"] and 0 < result["chars_sent"] < result["chars_total"]
+    assert {"doc_id", "line", "text", "score", "queries"} <= set(result["hits"][0])
+    assert len(result["queries"]) > 4
+
+
+def test_retrieve_searches_with_a_free_text_query(client):
+    detail = client.get("/api/applications/A0002/retrieve", params={"q": "allergies", "k": 2})
+    hits = detail.json()["hits"]
+    assert 1 <= len(hits) <= 2 and detail.json()["queries"] == ["allergies"]
+    assert any("llerg" in h["text"] or "NKDA" in h["text"] for h in hits)
+
+
+@pytest.mark.parametrize("params", [{"k": 0}, {"k": 11}, {"q": "x" * 201}, {"k": "many"}])
+def test_retrieve_rejects_bad_parameters(client, params):
+    assert client.get("/api/applications/A0002/retrieve", params=params).status_code == 422
+
+
+def test_retrieve_unknown_application_is_404(client):
+    assert client.get("/api/applications/NOPE/retrieve").status_code == 404
+
+
+def test_rag_check_matches_reading_everything_and_reports_what_was_sent(client):
+    detail = client.get("/api/applications/A0002").json()
+    body = {
+        "app_id": "A0002",
+        "application": detail["application"],
+        "notes": detail["notes"],
+        "pharmacy": detail["pharmacy"],
+    }
+    full = client.post("/api/check", json=body).json()
+    rag = client.post("/api/check", json={**body, "retrieval": "rag", "top_k": 3}).json()
+    assert full["retrieval"] is None
+    assert {(f["type"], f["field"]) for f in rag["flags"]} == keys(full["flags"])
+    info = rag["retrieval"]
+    assert info["k"] == 3 and 0 < info["chars_sent"] < info["chars_total"]
+    assert all(h["text"] for h in info["hits"])
+
+
+def test_rag_check_rejects_a_bad_top_k(client):
+    assert client.post("/api/check", json=adhoc(retrieval="rag", top_k=0)).status_code == 422
+    assert client.post("/api/check", json=adhoc(retrieval="magic")).status_code == 422
+
+
+def test_an_embedder_that_is_not_allowed_is_a_403_not_a_crash(data_dir):
+    def refuse(name):
+        raise PermissionError("needs ALLOW_LLM=1")
+
+    app = TestClient(create_app(data_dir, allow_llm=False, embedder_factory=refuse))
+    assert app.get("/api/applications/A0002/retrieve").status_code == 403
+    assert app.post("/api/check", json=adhoc(retrieval="rag")).status_code == 403
