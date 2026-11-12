@@ -1,5 +1,83 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>Application cross-check</title></head>
-<body><p>The web UI is added in the next commit.</p></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Application cross-check</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Application cross-check</h1>
+    <p class="disclaimer">
+      Synthetic data only. Flags are data-quality signals for a human reviewer, not underwriting
+      decisions. Every discrepancy cites its evidence; if nothing is found it is shown as
+      unverified, never as a contradiction.
+    </p>
+  </header>
+
+  <main>
+    <section id="inputs" aria-labelledby="inputs-title">
+      <h2 id="inputs-title">Inputs</h2>
+
+      <fieldset>
+        <legend>1. Application</legend>
+        <label>Load a generated application
+          <select id="app-select"></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="only-flawed" checked> only those with planted errors</label>
+        <label>Applicant name <input id="name" maxlength="100"></label>
+        <label>Declared conditions (one per line; abbreviations such as HTN are fine)
+          <textarea id="conditions" rows="4"></textarea>
+        </label>
+        <label>Declared medications (one per line: name and dose in mg, e.g. <code>metformin 500</code>)
+          <textarea id="medications" rows="4"></textarea>
+        </label>
+        <label>Declared allergies (one per line)
+          <textarea id="allergies" rows="2"></textarea>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. Sources</legend>
+        <div id="notes"></div>
+        <button type="button" id="add-note">Add a clinical note</button>
+        <label>Pharmacy rows (one per line: drug, dose, optional date, e.g. <code>metformin 500 2025-03-01</code>)
+          <textarea id="pharmacy" rows="4"></textarea>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Check</legend>
+        <label>Extractor
+          <select id="extractor">
+            <option value="rules">Rules (free baseline)</option>
+            <option value="llm" id="llm-option" disabled>LLM (disabled on this server)</option>
+          </select>
+        </label>
+        <button type="button" id="check" class="primary">Check application</button>
+        <p id="status" role="status" aria-live="polite"></p>
+      </fieldset>
+    </section>
+
+    <section id="results" aria-labelledby="results-title">
+      <h2 id="results-title">Results</h2>
+      <p id="empty" class="muted">Run a check to see flags here.</p>
+      <div id="warnings"></div>
+      <div id="flags"></div>
+      <details id="facts-box" hidden>
+        <summary>What the extractor found in the notes</summary>
+        <div id="facts"></div>
+      </details>
+      <h3 id="evidence-title" hidden>Evidence in the notes</h3>
+      <div id="evidence"></div>
+      <div id="answer-key-box" hidden>
+        <button type="button" id="reveal">Reveal the answer key (planted errors)</button>
+        <ul id="answer-key"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
 </html>
