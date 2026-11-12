@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
     cost_usd REAL,
-    duration_ms INTEGER NOT NULL
+    duration_ms INTEGER NOT NULL,
+    thread_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_app ON runs (app_id, ts);
 CREATE TABLE IF NOT EXISTS run_flags (
@@ -98,6 +99,7 @@ class RunRecord:
     output_tokens: int = 0
     cost_usd: float | None = None
     duration_ms: int = 0
+    thread_id: str | None = None
 
 
 class AuditDB:
@@ -108,6 +110,10 @@ class AuditDB:
         self.path = path
         with closing(self._connect()) as conn:
             conn.executescript(SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+            if "thread_id" not in columns:  # a log created before review threads were recorded
+                conn.execute("ALTER TABLE runs ADD COLUMN thread_id TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs (thread_id)")
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -119,7 +125,7 @@ class AuditDB:
         run_id = uuid.uuid4().hex[:12]
         with closing(self._connect()) as conn:
             conn.execute(
-                "INSERT INTO runs VALUES (" + ", ".join("?" * 21) + ")",
+                "INSERT INTO runs VALUES (" + ", ".join("?" * 22) + ")",
                 (
                     run_id,
                     _now(),
@@ -142,6 +148,7 @@ class AuditDB:
                     run.output_tokens,
                     run.cost_usd,
                     run.duration_ms,
+                    run.thread_id,
                 ),
             )
             conn.executemany(
@@ -170,7 +177,7 @@ class AuditDB:
     _RUN_COLUMNS = (
         "run_id, ts, app_id, source, status, extractor, model, prompt_version, retrieval, top_k, "
         "embedder, chars_sent, chars_total, n_flags, dropped, reasons, unmapped, input_tokens, "
-        "output_tokens, cost_usd, duration_ms"
+        "output_tokens, cost_usd, duration_ms, thread_id"
     )
 
     def _run_dict(self, row: tuple) -> dict:
@@ -190,6 +197,15 @@ class AuditDB:
         params.append(max(1, min(limit, 200)))
         with closing(self._connect()) as conn:
             return [self._run_dict(r) for r in conn.execute(query, params)]
+
+    def run_by_thread(self, thread_id: str) -> dict | None:
+        """The run recorded for a review thread, so a paused review survives a restart."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "SELECT run_id FROM runs WHERE thread_id = ? ORDER BY rowid DESC LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+        return self.run(row[0]) if row else None
 
     def run(self, run_id: str) -> dict | None:
         with closing(self._connect()) as conn:

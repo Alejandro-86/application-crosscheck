@@ -55,7 +55,7 @@ Deterministic rules compare the application with the sources and produce flags. 
                           every discrepancy needs a verifiable quote, else it is dropped
 ```
 
-The notes can also be read in full (no retrieval). Retrieval is optional so you can measure what it saves and what it costs.
+The whole flow is a LangGraph graph (see [The workflow engine](#the-workflow-engine-langgraph)). The notes can also be read in full (no retrieval). Retrieval is optional so you can measure what it saves and what it costs.
 
 | Flag | Meaning | Severity |
 |---|---|---|
@@ -113,7 +113,7 @@ Findings:
 - **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
 - **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
 - **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
-- **Review workflow:** the **Review workflow** button runs the check as the graph. The Workflow tab shows the path it took, why it needs a review (flags, unreadable note terms, or notes it could not read at all), and lets you Confirm or Dismiss each flag and submit. Decisions are written to the audit log against that run. An application the graph clears says so. Needs the `graph` extra; without it the endpoints answer 501.
+- **Review workflow:** the **Review workflow** button runs the check as the graph. The Workflow tab shows the path it took, why it needs a review (flags, unreadable note terms, or notes it could not read at all), and lets you Confirm or Dismiss each flag and submit. Decisions are written to the audit log against that run. An application the graph clears says so. A paused review survives a server restart.
 - **History and feedback:** a History tab lists the recorded checks for the selected application (open one for its model, prompt version, tokens and flags with evidence), and a reviewer-feedback table shows how reviewers treated each flag type.
 - **Export:** copy a Markdown report or download the JSON result.
 - **Dark mode:** the toggle in the top right switches themes. The choice is remembered, and the first visit follows your system setting.
@@ -126,7 +126,7 @@ Findings:
 | `GET /api/ingest/issues` | What the scraper loaded, and every error or warning it logged. |
 | `GET /api/pharmacy/{mrn}` | Look up one applicant's dispensing rows in the pharmacy database. |
 | `GET/PUT /api/reviews`, `GET /api/reviews/history?flag_id=` | Reviewer decisions, kept as an append-only event log in `audit.db`; the current decision is the latest event. An old `reviews.json` is imported once. |
-| `POST /api/applications/{id}/workflow`, `POST /api/workflow/{thread}/resume` | Start the graph for a stored application (it clears or pauses), then resume a paused run with decisions. Only the newest 100 paused runs are kept in memory. |
+| `POST /api/applications/{id}/workflow`, `.../workflow/stream`, `POST /api/workflow/{thread}/resume`, `GET /api/workflow/{thread}/history`, `GET /api/graph` | Run the graph for a stored application (it clears or pauses; the stream variant emits one JSON line per step), resume a paused run with decisions (also after a restart), list a run's checkpoints, and get the graph's own structure. |
 | `GET /api/review-stats` | Confirmed and dismissed counts per flag type, with a dismissed share: a noisy flag type shows up here. |
 | `GET /api/audit/runs?app_id=&limit=`, `GET /api/audit/runs/{id}` | The audit log: every check with its extractor, model, prompt version, retrieval settings, text sent, flags with evidence, tokens, cost and duration. |
 
@@ -143,23 +143,42 @@ The baseline numbers are low on purpose: the rules extractor cannot read narrati
 
 What the gate does not cover: the live behaviour of a model change in CI, anything the 200-note corpus does not exercise, and the web page.
 
-## Optional: the same check as a LangGraph workflow
+## The workflow engine: LangGraph
 
-`src/crosscheck/graph.py` runs the check as a graph instead of a plain function. It reuses the same pipeline functions, so it returns the same flags (a test compares them over 25 applications). What the graph adds is control flow:
+Every check in this project runs through one LangGraph graph (`src/crosscheck/graph.py`): the web page, the API, the evaluation, the regression gate and the CLI. `pipeline.check_application` is a thin entry point to it, and a reference implementation of the original algorithm in the tests confirms the graph returns the same flags.
 
+```mermaid
+flowchart TD
+    S([start]) -.->|embedder given| R[retrieve]
+    S -.->|no embedder| N[select_notes]
+    R --> N
+    N -.->|"Send: one task per note, in parallel"| E[extract_note]
+    N -.->|no notes| C[compare]
+    E --> C
+    C -.->|"flags, unreadable terms, or nothing read"| H{{human_review<br/>pauses for a person}}
+    C -.->|nothing to review| F[finalize]
+    H --> F
+    F --> X([end])
 ```
-START -> [retrieve] -> extract -> compare -> route -+-> human_review (pauses) -> finalize
-                                                    +-> finalize (nothing to review)
-```
 
-- **Conditional entry:** the `retrieve` step only runs when an embedder is supplied.
-- **Routing rule with reasons:** an application goes to review if it has flags, *or* its notes contained terms the system could not map (`unmapped_terms`), *or* notes exist but the extractor read no facts from any of them (`no_facts_read`). The reviewer sees which reasons applied. "Clear" therefore means the sources were read and agree, never just "nothing was found". On 150 generated applications with the rules extractor, 55 of the 122 reviews were `flags` + `no_facts_read`: the rules extractor cannot read narrative letters.
-- **A real pause:** `human_review` interrupts and the state is checkpointed; the run resumes with the reviewer's decisions without repeating the extraction (a test counts extractor calls). Decisions are validated against the flags that were shown.
-- **Checkpointed state stays small:** the extractor, embedder and documents travel in the run config, not in the state.
+That diagram is written by hand; `python -m crosscheck.graph --mermaid` prints the one LangGraph generates from the compiled graph, and the web page draws that one.
 
-Try it (inside the project venv: `python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev,graph]"`): `python -m crosscheck.graph A0001 --rag --decide Confirm`.
+| LangGraph feature | Where it is used |
+|---|---|
+| Typed state with **reducers** | `path` and `docs_read` are appended to by parallel branches; the rest of the state is small and JSON-serialisable |
+| **Conditional edges** | retrieval only when an embedder is supplied; the review routing rule (flags, unmappable terms, or notes that yielded no facts) |
+| **`Send`** (map-reduce) | one `extract_note` task per note, run in parallel with a cap of 4 (`max_concurrency`); results are merged in note order, so a parallel run equals a sequential one |
+| **`interrupt` / `Command(resume=...)`** | the review step pauses the run; it resumes with the reviewer's decisions without repeating the extraction; decisions are validated first, because LangGraph replays a rejected resume value |
+| **SQLite checkpointer** | a paused review survives a server restart: the run is found again by its thread id and resumed (`checkpoints.db`) |
+| **Streaming** (`stream_mode="updates"`) | `POST /api/applications/{id}/workflow/stream` emits one event per step as it finishes; the page animates the graph from it |
+| **State history** | `GET /api/workflow/{thread}/history` lists every checkpoint of a run |
+| **Graph introspection** | `GET /api/graph` and `--mermaid` come from `get_graph()` |
 
-It is wired into the web app (below) but not into the evaluation, and it uses an in-memory checkpointer, so a paused run does not survive a server restart. A decision that is not one of the flags shown is rejected before the run is resumed, so a bad request cannot block a paused review. For a fixed linear flow the plain function is simpler; the graph earns its place once review, routing or resumable state matter.
+Two compiled variants share the same node functions: an interactive graph (with the pause and the checkpointer) for the review workflow, and a batch graph without it for the evaluation and the gate. In batch mode a run that would need a review ends with the status `needs_review` instead of pausing.
+
+Try it: `python -m crosscheck.graph A0003 --rag --decide Confirm` (streams the steps, pauses, then resumes).
+
+Limits: the checkpointer is one SQLite file, so this is single-server; parallel model calls can overshoot the spend cap by a few calls; paused reviews are kept forever (no expiry yet).
 
 ## Limits
 
@@ -213,7 +232,7 @@ src/crosscheck/
   llm_extractor.py    LLM extractor with quote grounding and retries
   compare.py          deterministic comparison and the citation guardrail
   pipeline.py         (retrieve ->) extract -> merge -> compare -> enforce grounding
-  graph.py            optional LangGraph version with a human-review pause (needs the graph extra)
+  graph.py            the LangGraph workflow every check runs through (parallel notes, review pause, checkpoints)
   oracle.py           ground truth for scoring
   evaluate.py         extraction and flag metrics, report writer
   gate.py             regression gate: fail if metrics drop below the committed baseline

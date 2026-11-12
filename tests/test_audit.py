@@ -134,3 +134,31 @@ def test_usage_totals_sum_tokens_and_cost(tmp_path):
     log.record(kind="chat", model="m", input_tokens=10, output_tokens=4, cost=0.5, cached=False)
     log.record(kind="chat", model="m", input_tokens=0, output_tokens=0, cost=None, cached=True)
     assert log.totals() == (10, 4, 0.5)
+
+
+def test_a_run_can_be_found_by_its_review_thread(db):
+    run_id = db.record_run(RunRecord("A1", "rules", "all", 0, thread_id="abc123"))
+    db.record_run(RunRecord("A2", "rules", "all", 0, thread_id="other"))
+    assert db.run_by_thread("abc123")["run_id"] == run_id
+    assert db.run_by_thread("abc123")["thread_id"] == "abc123"
+    assert db.run_by_thread("missing") is None
+
+
+def test_an_audit_log_from_before_threads_were_recorded_is_upgraded(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, ts TEXT NOT NULL, app_id TEXT NOT NULL,"
+            " source TEXT NOT NULL, status TEXT NOT NULL, extractor TEXT NOT NULL, model TEXT,"
+            " prompt_version TEXT, retrieval TEXT NOT NULL, top_k INTEGER, embedder TEXT,"
+            " chars_sent INTEGER, chars_total INTEGER, n_flags INTEGER NOT NULL,"
+            " dropped INTEGER NOT NULL, reasons TEXT NOT NULL, unmapped TEXT NOT NULL,"
+            " input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cost_usd REAL,"
+            " duration_ms INTEGER NOT NULL);"
+            "INSERT INTO runs VALUES ('old000000001','t','A1','check','checked','rules',NULL,"
+            "'rules','all',NULL,NULL,NULL,NULL,0,0,'[]','[]',0,0,0.0,1);"
+        )
+    upgraded = AuditDB(path)
+    assert upgraded.run("old000000001")["thread_id"] is None
+    new_id = upgraded.record_run(RunRecord("A2", "rules", "all", 0, thread_id="t1"))
+    assert upgraded.run_by_thread("t1")["run_id"] == new_id

@@ -403,8 +403,10 @@ def test_workflow_finds_the_same_flags_as_a_plain_check(client):
 
 def test_a_clean_application_clears_without_a_pause(client):
     _, body = stored_app_with(client, "auto_clear")
-    assert body["thread_id"] is None and body["reasons"] == [] and body["flags"] == []
-    assert body["path"] == ["extract", "compare", "finalize"] and body["facts_read"] > 0
+    assert body["status"] == "auto_clear" and body["reasons"] == [] and body["flags"] == []
+    assert body["path"][0] == "select_notes" and body["path"][-1] == "finalize"
+    assert "human_review" not in body["path"] and body["facts_read"] > 0
+    assert body["thread_id"]  # every run has a thread, so its checkpoints can be inspected
 
 
 def test_resume_logs_each_decision_against_the_run_and_closes_the_run(data_dir):
@@ -474,26 +476,88 @@ def test_workflow_input_and_permission_errors(client):
     )
 
 
-def test_old_paused_reviews_are_dropped_beyond_the_cap(data_dir, monkeypatch):
-    monkeypatch.setattr("crosscheck.api.MAX_PAUSED_RUNS", 2)
-    app = TestClient(create_app(data_dir, allow_llm=False))
-    threads = []
-    for app_id in (a["app_id"] for a in app.get("/api/applications").json()):
-        body = app.post(f"/api/applications/{app_id}/workflow", json={}).json()
-        if body["thread_id"]:
-            threads.append(body["thread_id"])
-        if len(threads) == 3:
-            break
-    assert app.post(f"/api/workflow/{threads[0]}/resume", json={"decisions": {}}).status_code == 404
-    assert app.post(f"/api/workflow/{threads[2]}/resume", json={"decisions": {}}).status_code == 200
+def test_a_paused_review_survives_a_server_restart(data_dir):
+    first = TestClient(create_app(data_dir, allow_llm=False))
+    _, started = stored_app_with(first, "awaiting_review")
+    flag = started["flags"][0]["id"]
+
+    restarted = TestClient(create_app(data_dir, allow_llm=False))  # new process, same files
+    done = restarted.post(
+        f"/api/workflow/{started['thread_id']}/resume", json={"decisions": {flag: "Confirm"}}
+    )
+    assert done.status_code == 200 and done.json()["status"] == "reviewed"
+    assert restarted.get("/api/reviews").json()[flag] == "Confirm"
+    again = restarted.post(f"/api/workflow/{started['thread_id']}/resume", json={"decisions": {}})
+    assert again.status_code == 404
 
 
-def test_the_workflow_says_so_when_langgraph_is_not_installed(client, monkeypatch):
-    import sys
+def stream_events(client, app_id, **body):
+    import json
 
-    import crosscheck
+    with client.stream("POST", f"/api/applications/{app_id}/workflow/stream", json=body) as r:
+        assert r.headers["content-type"].startswith("application/x-ndjson")
+        return [json.loads(line) for line in r.iter_lines() if line]
 
-    monkeypatch.delattr(crosscheck, "graph", raising=False)
-    monkeypatch.setitem(sys.modules, "crosscheck.graph", None)
-    response = client.post("/api/applications/A0001/workflow", json={})
-    assert response.status_code == 501 and "LangGraph" in response.json()["detail"]
+
+def test_the_stream_reports_each_graph_step_then_a_final_result(client):
+    app_id, _ = stored_app_with(client, "awaiting_review")
+    events = stream_events(client, app_id)
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "start" and kinds[-1] == "done" and set(kinds[1:-1]) == {"node"}
+    nodes = [e["node"] for e in events if e["event"] == "node"]
+    assert nodes[0] == "select_notes" and "extract_note" in nodes and nodes[-1] == "human_review"
+    final = events[-1]
+    assert final["status"] == "awaiting_review" and final["thread_id"] == events[0]["thread_id"]
+    assert (
+        client.get(f"/api/audit/runs/{final['run_id']}").json()["thread_id"] == final["thread_id"]
+    )
+
+
+def test_the_stream_with_retrieval_starts_with_the_retrieve_step(client):
+    app_id, _ = stored_app_with(client, "awaiting_review")
+    events = stream_events(client, app_id, retrieval="rag", top_k=2)
+    assert [e["node"] for e in events if e["event"] == "node"][0] == "retrieve"
+    assert events[-1]["retrieval"]["k"] == 2
+
+
+def test_stream_errors_become_events_with_the_right_status(data_dir):
+    from crosscheck.config import ConfigError
+    from crosscheck.costs import BudgetExceededError
+
+    for error, status in [
+        (ConfigError("no key"), 503),
+        (BudgetExceededError("cap"), 429),
+        (RuntimeError("boom"), 502),
+    ]:
+
+        def failing(name, error=error):
+            raise error
+
+        app = TestClient(create_app(data_dir, extractor_factory=failing, allow_llm=True))
+        events = stream_events(app, "A0001", extractor="llm")
+        assert events[-1]["event"] == "error" and events[-1]["status"] == status
+
+
+def test_the_stream_refuses_before_it_starts_when_it_must(client):
+    assert client.post("/api/applications/NOPE/workflow/stream", json={}).status_code == 404
+    start = "/api/applications/A0001/workflow/stream"
+    assert client.post(start, json={"extractor": "llm"}).status_code == 403
+    assert client.post(start, json={"top_k": 99}).status_code == 422
+
+
+def test_the_state_history_of_a_run_is_available(client):
+    _, started = stored_app_with(client, "awaiting_review")
+    history = client.get(f"/api/workflow/{started['thread_id']}/history").json()
+    assert history[0]["next"] == ["human_review"] and history[0]["flags"] == len(started["flags"])
+    assert [h["step"] for h in history] == sorted((h["step"] for h in history), reverse=True)
+    assert client.get("/api/workflow/" + "0" * 16 + "/history").status_code == 404
+    assert client.get("/api/workflow/not-a-thread/history").status_code == 422
+
+
+def test_the_graph_structure_endpoint_serves_langgraphs_own_description(client):
+    described = client.get("/api/graph").json()
+    assert {"select_notes", "extract_note", "compare", "human_review", "finalize"} <= set(
+        described["nodes"]
+    )
+    assert any(e["source"] == "select_notes" and e["conditional"] for e in described["edges"])
+    assert "flowchart" in described["mermaid"] or "graph TD" in described["mermaid"]
