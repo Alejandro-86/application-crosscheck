@@ -24,3 +24,5 @@ jobs:
         run: ruff format --check .
       - name: Test
         run: pytest
+      - name: Regression gate
+        run: python -m crosscheck.gate

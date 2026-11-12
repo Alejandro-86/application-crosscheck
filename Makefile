@@ -1,4 +1,4 @@
-.PHONY: install lint format test data ingest eval-rules eval-rag eval-llm demo web
+.PHONY: install lint format test data ingest eval-rules eval-rag eval-llm gate gate-llm demo web
 
 install:
 	pip install -e ".[dev]"
@@ -26,6 +26,12 @@ eval-rules:
 
 eval-rag:
 	python -m crosscheck.evaluate --sweep --out docs/results-rag.md
+
+gate:
+	python -m crosscheck.gate
+
+gate-llm:
+	python -m crosscheck.gate --llm --limit 100
 
 eval-llm:
 	python -m crosscheck.evaluate --extractor llm --limit 20 --out docs/results-llm.md

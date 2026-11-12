@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "corpus": {
+      "hard_fraction": 0.4,
+      "n_docs": 200,
+      "seed": 7
+    },
+    "extractor": "rules"
+  },
+  "metrics": {
+    "extraction.allergy.precision": 1.0,
+    "extraction.allergy.recall": 0.62,
+    "extraction.condition.precision": 1.0,
+    "extraction.condition.recall": 0.6075,
+    "extraction.medication.precision": 1.0,
+    "extraction.medication.recall": 0.5129,
+    "extraction.negated_condition.precision": 1.0,
+    "extraction.negated_condition.recall": 0.5268,
+    "flags.precision": 0.6458,
+    "flags.recall": 0.8794,
+    "retrieval.top3.flag_recall": 0.8794,
+    "retrieval.top3.text_share": 0.6838,
+    "scraper.exact_rate": 1.0
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "data": "data/generated",
+    "limit": 100,
+    "model": "gpt-6-luna",
+    "note": "recorded from a live run; replies are cached, so a rerun is free",
+    "prompt_version": "089a0fff"
+  },
+  "metrics": {
+    "extraction.allergy.precision": 1.0,
+    "extraction.allergy.recall": 1.0,
+    "extraction.condition.precision": 1.0,
+    "extraction.condition.recall": 0.9477,
+    "extraction.medication.precision": 1.0,
+    "extraction.medication.recall": 1.0,
+    "extraction.negated_condition.precision": 1.0,
+    "extraction.negated_condition.recall": 1.0,
+    "flags.precision": 0.9558,
+    "flags.recall": 1.0
+  }
+}
