@@ -32,7 +32,3 @@ def load_documents(data_dir: Path) -> list[LoadedDocument]:
             )
         )
     return documents
-
-
-def load_questions(data_dir: Path) -> list[dict]:
-    return json.loads((data_dir / "questions.json").read_text(encoding="utf-8"))

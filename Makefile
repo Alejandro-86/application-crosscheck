@@ -15,4 +15,4 @@ test:
 	pytest
 
 data:
-	python -m clinical_rag_lab.generate --n-docs 200 --seed 42 --out data/generated
+	python -m crosscheck.generate --n-docs 200 --seed 42 --out data/generated

@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from clinical_rag_lab.synthetic import generate_corpus, write_corpus
+from crosscheck.synthetic import generate_corpus, write_corpus
 
 
 def test_same_seed_is_identical():
