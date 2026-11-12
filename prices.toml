@@ -1,0 +1,21 @@
+# USD per 1M tokens.
+#
+# These numbers were copied from third-party pricing roundups (November 2026) and have NOT been
+# verified against OpenAI's pricing page. Check them before trusting any cost figure, and add the
+# exact model name you use in OPENAI_CHAT_MODEL.
+
+[models."gpt-6-luna"]
+input = 0.10
+output = 0.50
+
+[models."gpt-6.1-terra"]
+input = 1.00
+output = 5.00
+
+[models."gpt-6.1-sol"]
+input = 2.00
+output = 10.00
+
+[models."text-embedding-3-small"]
+input = 0.02
+output = 0.0

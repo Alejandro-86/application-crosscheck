@@ -12,3 +12,7 @@ dist/
 build/
 .idea/
 .vscode/
+data/generated/
+runs/
+.cache/
+.ruff_cache/
