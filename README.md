@@ -9,7 +9,7 @@ A small demo: cross-check synthetic insurance applications against several sourc
 An application declares conditions, medications and allergies. The system checks those declarations against two sources:
 
 - **Clinical notes** (free text): an extractor pulls out facts, each with a verbatim quote.
-- **A pharmacy database** (structured rows): used as an independent second source for medications.
+- **A pharmacy database** (a SQLite file, `data/generated/pharmacy.db`, one row per dispensed medication per applicant): an independent second source for medications. The app opens it read-only and only runs parameterised queries.
 
 Deterministic rules compare the application with the sources and produce flags. Every discrepancy cites its evidence. If nothing is found, the flag says "unverified"; it never claims a contradiction without evidence.
 
@@ -48,6 +48,7 @@ The only measured results are for the **rule-based baseline**, in [docs/results-
 `make web` serves a single-page app (plain HTML/CSS/JS, no build step) and a JSON API from one process.
 
 - **Case list:** a searchable sidebar of the generated applications, with a badge showing planted errors, then the number of flags once checked. Start from a blank application too.
+- **Pharmacy database:** the Pharmacy tab shows the applicant's rows read from the database, and you can look up any applicant ID (MRN) to load their rows.
 - **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
 - **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
 - **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
@@ -57,7 +58,8 @@ The only measured results are for the **rule-based baseline**, in [docs/results-
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/check` | Body: application, notes, pharmacy rows, extractor (`rules` or `llm`). Returns flags with evidence, unmapped terms and what was extracted. |
-| `GET /api/applications`, `GET /api/applications/{id}`, `GET /api/applications/{id}/answer-key` | Browse the generated applications and their planted errors. |
+| `GET /api/applications`, `GET /api/applications/{id}`, `GET /api/applications/{id}/answer-key` | Browse the generated applications (pharmacy rows come from the database) and their planted errors. |
+| `GET /api/pharmacy/{mrn}` | Look up one applicant's dispensing rows in the pharmacy database. |
 | `GET/PUT /api/reviews` | Reviewer decisions, stored in a local JSON file. |
 
 Safety defaults: the server binds to localhost, input sizes and shapes are validated, all text is rendered as text (never as HTML), and the model extractor is **off** unless the server is
@@ -69,6 +71,7 @@ started with `ALLOW_LLM=1` (it then uses your key and counts against `MAX_SPEND_
 - The terminology table is a small stand-in for a real terminology service.
 - Matching patients by MRN is a simplification; no identity-mismatch checks yet.
 - The review step stores decisions in a local JSON file only.
+- The pharmacy database is a single local SQLite file with one table; a real system would query a pharmacy service with authentication and audit logging.
 
 ## Getting started
 
@@ -77,7 +80,7 @@ python -m venv .venv && source .venv/bin/activate
 make install                  # core + dev tools
 pip install -e ".[demo]"      # adds Streamlit for the demo
 cp .env.example .env          # add your key and chat model name (only needed for the LLM extractor)
-make data                     # writes data/generated/ from a fixed seed
+make data                     # writes data/generated/ (notes, applications, pharmacy.db) from a fixed seed
 make test && make lint
 make eval-rules               # free baseline, writes docs/results-rules.md
 make demo                     # Streamlit app on the rules baseline (LLM mode uses your key)
@@ -93,7 +96,8 @@ Check `prices.toml` against the provider's pricing page before trusting any cost
 ```
 src/crosscheck/
   synthetic.py        notes generator with planted hard cases (negation, abbreviations, brands)
-  pharmacy.py         mock pharmacy source (imperfect on purpose)
+  pharmacy.py         synthetic pharmacy rows (imperfect on purpose)
+  pharmacy_db.py      the SQLite pharmacy database: create, migrate, read-only queries
   applications.py     applications with planted errors
   terminology.py      surface form -> canonical term
   rules_extractor.py  free baseline extractor

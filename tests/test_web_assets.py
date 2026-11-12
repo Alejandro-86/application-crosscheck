@@ -36,3 +36,9 @@ def test_theme_toggle_and_early_theme_script_are_present():
     assert 'id="theme-toggle"' in page
     assert page.index("data-theme") < page.index("/static/style.css")
     assert ':root[data-theme="dark"]' in style
+
+
+def test_pharmacy_lookup_controls_exist_in_the_page():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    for element_id in ("mrn-input", "load-pharmacy", "db-info"):
+        assert f'id="{element_id}"' in page, element_id
