@@ -4,6 +4,8 @@ Synthetic data only. The comparison rules are deterministic; any gap below comes
 
 - Applications: 120 (111 planted errors)
 - Notes processed: 200
+- Applications parsed from their raw forms exactly as the truth file says: 120/120
+- Extractor input: all text; 49534/49534 characters of notes sent (100%)
 - Flags dropped for missing evidence: 0
 - Quotes not found in the note (dropped): 0
 - Terms with no canonical mapping: 0
