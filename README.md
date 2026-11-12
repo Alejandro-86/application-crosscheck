@@ -99,6 +99,24 @@ Findings:
 Safety defaults: the server binds to localhost, input sizes and shapes are validated, all text is rendered as text (never as HTML), and the model extractor is **off** unless the server is
 started with `ALLOW_LLM=1` (it then uses your key and counts against `MAX_SPEND_USD`). There is no authentication, so do not expose it publicly with the LLM enabled.
 
+## Optional: the same check as a LangGraph workflow
+
+`src/crosscheck/graph.py` runs the check as a graph instead of a plain function. It reuses the same pipeline functions, so it returns the same flags (a test compares them over 25 applications). What the graph adds is control flow:
+
+```
+START -> [retrieve] -> extract -> compare -> route -+-> human_review (pauses) -> finalize
+                                                    +-> finalize (nothing to review)
+```
+
+- **Conditional entry:** the `retrieve` step only runs when an embedder is supplied.
+- **Routing rule:** an application goes to review if it has flags *or* its notes contained terms the system could not read, so an unreadable note is never waved through as clear.
+- **A real pause:** `human_review` interrupts and the state is checkpointed; the run resumes with the reviewer's decisions without repeating the extraction (a test counts extractor calls). Decisions are validated against the flags that were shown.
+- **Checkpointed state stays small:** the extractor, embedder and documents travel in the run config, not in the state.
+
+Try it: `pip install -e ".[graph]"` then `python -m crosscheck.graph A0001 --rag --decide Confirm`.
+
+It is not wired into the web app or the evaluation, and it uses an in-memory checkpointer, so a paused run does not survive a restart. For a fixed linear flow the plain function is simpler; the graph earns its place once review, routing or resumable state matter.
+
 ## Limits
 
 - Synthetic, templated notes are far easier than real clinical text.
@@ -150,6 +168,7 @@ src/crosscheck/
   llm_extractor.py    LLM extractor with quote grounding and retries
   compare.py          deterministic comparison and the citation guardrail
   pipeline.py         (retrieve ->) extract -> merge -> compare -> enforce grounding
+  graph.py            optional LangGraph version with a human-review pause (needs the graph extra)
   oracle.py           ground truth for scoring
   evaluate.py         extraction and flag metrics, report writer
   demo.py             Streamlit app (demo_helpers.py holds the testable logic)
