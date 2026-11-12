@@ -15,7 +15,7 @@ test:
 	pytest
 
 data:
-	python -m crosscheck.generate --n-docs 200 --seed 42 --out data/generated
+	python -m crosscheck.generate --n-docs 1000 --seed 42 --out data/generated
 	python -m crosscheck.ingest --data data/generated
 
 ingest:

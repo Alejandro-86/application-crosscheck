@@ -52,8 +52,8 @@ The notes can also be read in full (no retrieval). Retrieval is optional so you 
 
 The only measured results use the **rule-based extractor** and the **offline embedder**:
 
-- [docs/results-rules.md](docs/results-rules.md): 1.000 on every metric, and all 120 raw forms parsed exactly as the truth file says. That is expected, because the synthetic notes use a few templates, so it says little about real notes.
-- [docs/results-rag.md](docs/results-rag.md): reading everything vs retrieval. Retrieving the top passage per query sends **48% of the note text** and loses no flags; about as much text (52%) chosen by chance, the control, scores F1 0.737 with 19 of 131 flags missed. Every note of a patient repeats the same facts and the topic queries suit the templates, so read this as an upper bound.
+- [docs/results-rules.md](docs/results-rules.md): 1.000 on every metric, and all 600 raw forms parsed exactly as the truth file says. That is expected, because the synthetic notes use a few templates, so it says little about real notes.
+- [docs/results-rag.md](docs/results-rag.md): reading everything vs retrieval. Retrieving the top passage per query sends **47% of the note text** and loses no flags (0 of 590); about as much text (51%) chosen by chance, the control, scores F1 0.737 with 82 of 590 flags missed. Measured on 1,000 notes and 600 applications. Every note of a patient repeats the same facts and the topic queries suit the templates, so read this as an upper bound.
 
 The **LLM extractor and the OpenAI embedder have not been run** (they need an API key); run `make eval-llm` and `make ingest` with `--embedder openai` to compare. No LLM or neural-embedding numbers are claimed.
 
