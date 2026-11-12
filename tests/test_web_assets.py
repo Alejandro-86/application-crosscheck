@@ -60,3 +60,8 @@ def test_raw_form_and_retrieval_controls_exist_in_the_page():
     ):
         assert f'id="{element_id}"' in page, element_id
     assert 'data-tab="retrieval"' in page and 'data-panel="retrieval"' in page
+
+
+def test_sidebar_shows_only_the_first_twenty_matches():
+    script = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "SIDEBAR_LIMIT = 20" in script and "shown.slice(0, SIDEBAR_LIMIT)" in script

@@ -41,6 +41,26 @@ CONDITION_FORMS = {
 }
 CONDITIONS = list(CONDITION_FORMS)
 
+# Extra wordings the terminology table knows (a real service such as SNOMED CT has synonyms).
+CONDITION_SYNONYMS = {
+    "hypertension": ["high blood pressure"],
+    "type 2 diabetes mellitus": ["type II diabetes"],
+    "heart failure": ["congestive cardiac failure"],
+    "gastro-oesophageal reflux disease": ["acid reflux"],
+    "osteoarthritis": ["degenerative joint disease"],
+    "chronic kidney disease": ["chronic renal impairment"],
+    "hypothyroidism": ["underactive thyroid"],
+}
+# Wordings the table does NOT know: they must come out as "unmapped", never as a guess.
+UNLISTED_PARAPHRASES = {
+    "hypertension": "raised pressure readings",
+    "type 2 diabetes mellitus": "sugar diabetes",
+    "asthma": "reactive airways",
+    "atrial fibrillation": "an irregular pulse",
+    "migraine": "recurrent severe headaches",
+    "depression": "persistently low mood",
+}
+
 # generic name -> (brand name, available doses, unit, frequency)
 MED_CATALOG = {
     "metformin": ("Glucophage", [500, 850, 1000], "mg", "twice daily"),
@@ -305,7 +325,9 @@ def _render_document(
     )
 
 
-def generate_corpus(n_docs: int = 200, seed: int = 42) -> tuple[list[Patient], list[Document]]:
+def generate_corpus(
+    n_docs: int = 200, seed: int = 42, hard_fraction: float = 0.0
+) -> tuple[list[Patient], list[Document]]:
     if n_docs < 1:
         raise ValueError("n_docs must be at least 1")
     rng = random.Random(seed)
@@ -329,6 +351,17 @@ def generate_corpus(n_docs: int = 200, seed: int = 42) -> tuple[list[Patient], l
         _render_document(rng, patients[owner], f"D{i + 1:04d}", rng.choice(DOC_TYPES), base_date)
         for i, owner in enumerate(owners)
     ]
+    if hard_fraction > 0:
+        # A separate stream, so the easy notes are identical whatever the fraction is.
+        from crosscheck.hard_notes import render_hard_document
+
+        hard_rng = random.Random(seed + 4)
+        patient_by_id = {p.patient_id: p for p in patients}
+        for i, doc in enumerate(documents):
+            if hard_rng.random() < hard_fraction:
+                documents[i] = render_hard_document(
+                    hard_rng, patient_by_id[doc.patient_id], doc.doc_id, base_date
+                )
     return patients, documents
 
 

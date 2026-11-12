@@ -7,11 +7,14 @@ guessing.
 
 import re
 
-from crosscheck.synthetic import CONDITION_FORMS, MED_CATALOG
+from crosscheck.synthetic import CONDITION_FORMS, CONDITION_SYNONYMS, MED_CATALOG
 
 _CONDITIONS = {
     form.lower(): canonical for canonical, forms in CONDITION_FORMS.items() for form in forms
 }
+for _canonical, _synonyms in CONDITION_SYNONYMS.items():
+    for _synonym in _synonyms:
+        _CONDITIONS[_synonym.lower()] = _canonical
 _DRUGS: dict[str, str] = {}
 for _generic, (_brand, *_rest) in MED_CATALOG.items():
     _DRUGS[_generic] = _generic

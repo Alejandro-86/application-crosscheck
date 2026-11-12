@@ -4,10 +4,10 @@ Synthetic data only. The same rules extractor and the same comparison rules run 
 
 | Extractor input | Text sent | Flag precision | Flag recall | Flag F1 | Missed flags |
 |---|---|---|---|---|---|
-| all text | 100% | 1.000 | 1.000 | 1.000 | 0 of 590 |
-| top-1 per query (hashing-v2-2048) | 47% | 1.000 | 1.000 | 1.000 | 0 of 590 |
-| top-2 per query (hashing-v2-2048) | 59% | 1.000 | 1.000 | 1.000 | 0 of 590 |
-| top-3 per query (hashing-v2-2048) | 62% | 1.000 | 1.000 | 1.000 | 0 of 590 |
-| top-5 per query (hashing-v2-2048) | 62% | 1.000 | 1.000 | 1.000 | 0 of 590 |
-| top-1 per query (random-control) | 51% | 0.645 | 0.861 | 0.737 | 82 of 590 |
-| top-3 per query (random-control) | 86% | 0.963 | 0.969 | 0.966 | 18 of 590 |
+| all text | 100% | 0.558 | 0.842 | 0.671 | 97 of 614 |
+| top-1 per query (hashing-v2-2048) | 55% | 0.558 | 0.842 | 0.671 | 97 of 614 |
+| top-2 per query (hashing-v2-2048) | 68% | 0.558 | 0.842 | 0.671 | 97 of 614 |
+| top-3 per query (hashing-v2-2048) | 69% | 0.558 | 0.842 | 0.671 | 97 of 614 |
+| top-5 per query (hashing-v2-2048) | 70% | 0.558 | 0.842 | 0.671 | 97 of 614 |
+| top-1 per query (random-control) | 57% | 0.414 | 0.748 | 0.533 | 155 of 614 |
+| top-3 per query (random-control) | 89% | 0.531 | 0.822 | 0.645 | 109 of 614 |

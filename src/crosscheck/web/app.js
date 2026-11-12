@@ -14,6 +14,7 @@ const SEVERITY_HELP = {
 };
 const SEVERITY_BADGE = { discrepancy: "Discrepancy", data_quality: "Source conflict", unverified: "Unverified" };
 const MAX_NOTES = 5;
+const SIDEBAR_LIMIT = 20;
 const AUTO_CHECK_DELAY_MS = 700;
 
 const $ = (id) => document.getElementById(id);
@@ -114,7 +115,11 @@ function renderSidebar() {
     (!onlyFlawed || a.planted_errors > 0) &&
     (!query || a.name.toLowerCase().includes(query) || a.app_id.toLowerCase().includes(query)));
   if (!shown.length) list.append(el("li", { class: "muted small", text: "No applications match." }));
-  for (const app of shown) {
+  const visible = shown.slice(0, SIDEBAR_LIMIT);
+  if (shown.length > visible.length) {
+    list.append(el("li", { class: "muted small more", text: `Showing the first ${visible.length} of ${shown.length}. Type in the search box to find others.` }));
+  }
+  for (const app of visible) {
     const cached = state.cache[app.app_id];
     let badge;
     if (cached === undefined) badge = el("span", { class: "count", text: `${app.planted_errors} planted` });

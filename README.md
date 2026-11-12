@@ -50,12 +50,12 @@ The notes can also be read in full (no retrieval). Retrieval is optional so you 
 
 ## Results so far
 
-The only measured results use the **rule-based extractor** and the **offline embedder**:
+Measured so far, on synthetic data. The default dataset is 1,000 notes and 600 applications; 40% of the notes are **hard**: narrative letters with paraphrased conditions (some in the terminology table, some deliberately not), doses in grams, differently phrased negations, and two traps that must not become facts (a relative's condition, a drug the patient used to take). `make data` writes it; `--hard-fraction 0` gives the easy templated version.
 
-- [docs/results-rules.md](docs/results-rules.md): 1.000 on every metric, and all 600 raw forms parsed exactly as the truth file says. That is expected, because the synthetic notes use a few templates, so it says little about real notes.
-- [docs/results-rag.md](docs/results-rag.md): reading everything vs retrieval. Retrieving the top passage per query sends **47% of the note text** and loses no flags (0 of 590); about as much text (51%) chosen by chance, the control, scores F1 0.737 with 82 of 590 flags missed. Measured on 1,000 notes and 600 applications. Every note of a patient repeats the same facts and the topic queries suit the templates, so read this as an upper bound.
+- [docs/results-rules.md](docs/results-rules.md): the free rules extractor scores 1.000 on the templated notes, and reads **none** of the narrative letters (recall 0.00 under `narrative`, `paraphrase`, `family_history`, `dose_in_grams`). Overall flag F1 falls to 0.67, and precision on `unverified` flags to 0.22, because anything the extractor misses surfaces as "not found". That is the baseline a language model has to beat. All 600 raw forms still parse exactly.
+- [docs/results-rag.md](docs/results-rag.md): reading everything vs retrieval vs a random control. On templated notes, retrieving the top passage per query sends about half the text and loses no flags, while random selection of a similar amount loses many. On the hard notes the rules extractor cannot read the letters either way, so this table cannot show retrieval loss there; use the LLM extractor for that.
 
-The **LLM extractor and the OpenAI embedder have not been run** (they need an API key); run `make eval-llm` and `make ingest` with `--embedder openai` to compare. No LLM or neural-embedding numbers are claimed.
+The LLM extractor has been run **once**, on 20 applications of the earlier, templated dataset (a small, low-cost model, about half a cent): flag-level precision, recall and F1 were all 1.000, with one missed negation and no ungrounded quotes. That says the pipeline and guardrails work, not that the model is good: the baseline scored the same on that data. **It has not yet been run on the hard notes, and the OpenAI embedder has not been run at all.** To do so: `python -m crosscheck.evaluate --extractor llm --limit 100 --out docs/results-llm.md` (costs a few cents), and `python -m crosscheck.ingest --embedder openai`.
 
 ## Web app and API
 
@@ -101,7 +101,7 @@ python -m venv .venv && source .venv/bin/activate
 make install                  # core + dev tools
 pip install -e ".[demo]"      # adds Streamlit for the demo
 cp .env.example .env          # add your key and chat model name (only needed for the LLM extractor)
-make data                     # generates notes, raw forms and pharmacy.db from a fixed seed, then runs the scraper (store.db)
+make data                     # 1000 notes (40% hard), raw forms, pharmacy.db; then runs the scraper (store.db)
 make test && make lint
 make eval-rules               # free baseline, writes docs/results-rules.md
 make eval-rag                 # all text vs retrieval vs a random control, writes docs/results-rag.md
@@ -123,6 +123,7 @@ src/crosscheck/
   pharmacy.py         synthetic pharmacy rows (imperfect on purpose)
   pharmacy_db.py      the SQLite pharmacy database: create, migrate, read-only queries
   applications.py     applications with planted errors (the truth and the answer key)
+  hard_notes.py       narrative letters with paraphrases, grams, family-history and stopped-drug traps
   forms.py            renders applications as messy raw-text forms (two layouts, abbreviations, brands)
   ingest.py           the scraper: parse forms and notes, chunk, embed, load store.db idempotently
   store.py            the SQLite application store: schema and read-only queries
