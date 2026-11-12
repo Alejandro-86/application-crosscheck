@@ -236,3 +236,11 @@ details summary { cursor: pointer; color: var(--muted); margin: .8rem 0 .3rem; }
 .run-body .kv { display: grid; grid-template-columns: max-content 1fr; gap: .15rem .8rem; margin: .3rem 0 .5rem; }
 .run-body .kv span:nth-child(odd) { color: var(--muted); }
 .feedback { margin-top: 1rem; }
+
+/* workflow */
+.path { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; margin: .4rem 0; }
+.path .step { font-size: .78rem; padding: .12rem .55rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.path .step.pause { background: var(--data_quality-soft); color: var(--data_quality); }
+.path .arrow { color: var(--muted); font-size: .8rem; }
+.reasons { display: grid; gap: .3rem; margin: .5rem 0; }
+.choices { display: flex; gap: .4rem; align-items: center; margin-top: .5rem; font-size: .8rem; color: var(--muted); }

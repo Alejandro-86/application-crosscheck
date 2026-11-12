@@ -131,6 +131,7 @@
           <h2 id="results-title">Results</h2>
           <div class="head-actions">
             <button type="button" id="check" class="primary">Run check <kbd>Ctrl/&#8984; + Enter</kbd></button>
+            <button type="button" id="workflow-btn" class="ghost" title="Run the check as a graph that pauses for a reviewer when needed">Review workflow</button>
             <button type="button" id="copy-report" class="ghost" disabled>Copy report</button>
             <button type="button" id="download-json" class="ghost" disabled>Download JSON</button>
           </div>
@@ -144,6 +145,7 @@
           <button role="tab" type="button" data-tab="compare" aria-selected="false">Declared vs record</button>
           <button role="tab" type="button" data-tab="evidence" aria-selected="false">Evidence in sources</button>
           <button role="tab" type="button" data-tab="retrieval" aria-selected="false">Retrieval</button>
+          <button role="tab" type="button" data-tab="workflow" aria-selected="false">Workflow</button>
           <button role="tab" type="button" data-tab="history" aria-selected="false">History</button>
         </div>
 
@@ -165,6 +167,11 @@
 
         <div class="tab-panel" data-panel="retrieval" hidden>
           <div id="retrieval-info"></div>
+        </div>
+
+        <div class="tab-panel" data-panel="workflow" hidden>
+          <p class="muted small">The same check run as a graph. It clears on its own only when the sources were read and agree; otherwise it pauses and waits for your decisions.</p>
+          <div id="workflow-view"></div>
         </div>
 
         <div class="tab-panel" data-panel="history" hidden>

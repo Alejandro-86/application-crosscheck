@@ -85,6 +85,7 @@ Findings:
 - **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
 - **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
 - **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
+- **Review workflow:** the **Review workflow** button runs the check as the graph. The Workflow tab shows the path it took, why it needs a review (flags, unreadable note terms, or notes it could not read at all), and lets you Confirm or Dismiss each flag and submit. Decisions are written to the audit log against that run. An application the graph clears says so. Needs the `graph` extra; without it the endpoints answer 501.
 - **History and feedback:** a History tab lists the recorded checks for the selected application (open one for its model, prompt version, tokens and flags with evidence), and a reviewer-feedback table shows how reviewers treated each flag type.
 - **Export:** copy a Markdown report or download the JSON result.
 - **Dark mode:** the toggle in the top right switches themes. The choice is remembered, and the first visit follows your system setting.
@@ -97,6 +98,7 @@ Findings:
 | `GET /api/ingest/issues` | What the scraper loaded, and every error or warning it logged. |
 | `GET /api/pharmacy/{mrn}` | Look up one applicant's dispensing rows in the pharmacy database. |
 | `GET/PUT /api/reviews`, `GET /api/reviews/history?flag_id=` | Reviewer decisions, kept as an append-only event log in `audit.db`; the current decision is the latest event. An old `reviews.json` is imported once. |
+| `POST /api/applications/{id}/workflow`, `POST /api/workflow/{thread}/resume` | Start the graph for a stored application (it clears or pauses), then resume a paused run with decisions. Only the newest 100 paused runs are kept in memory. |
 | `GET /api/review-stats` | Confirmed and dismissed counts per flag type, with a dismissed share: a noisy flag type shows up here. |
 | `GET /api/audit/runs?app_id=&limit=`, `GET /api/audit/runs/{id}` | The audit log: every check with its extractor, model, prompt version, retrieval settings, text sent, flags with evidence, tokens, cost and duration. |
 
@@ -119,7 +121,7 @@ START -> [retrieve] -> extract -> compare -> route -+-> human_review (pauses) ->
 
 Try it (inside the project venv: `python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev,graph]"`): `python -m crosscheck.graph A0001 --rag --decide Confirm`.
 
-It is not wired into the web app or the evaluation, and it uses an in-memory checkpointer, so a paused run does not survive a restart. For a fixed linear flow the plain function is simpler; the graph earns its place once review, routing or resumable state matter.
+It is wired into the web app (below) but not into the evaluation, and it uses an in-memory checkpointer, so a paused run does not survive a server restart. A decision that is not one of the flags shown is rejected before the run is resumed, so a bad request cannot block a paused review. For a fixed linear flow the plain function is simpler; the graph earns its place once review, routing or resumable state matter.
 
 ## Limits
 

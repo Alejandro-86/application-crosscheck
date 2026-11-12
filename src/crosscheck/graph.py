@@ -152,6 +152,12 @@ def route(state: CheckState) -> str:
     return "human_review" if state.get("review_reasons") else "finalize"
 
 
+def _validate_decisions(decisions: dict[str, str], shown: set[str]) -> None:
+    for key, value in decisions.items():
+        if key not in shown or value not in DECISIONS:
+            raise ValueError(f"Invalid review decision: {key!r} -> {value!r}")
+
+
 def human_review(state: CheckState, config) -> CheckState:
     ctx = _ctx(config)
     if not ctx.trace or ctx.trace[-1] != "human_review":  # this node re-enters on resume
@@ -165,10 +171,7 @@ def human_review(state: CheckState, config) -> CheckState:
         }
     )
     decisions = reply["decisions"]  # wrapped: LangGraph ignores an empty resume value
-    known = {f["id"] for f in state["flags"]}
-    for key, value in decisions.items():
-        if key not in known or value not in DECISIONS:
-            raise ValueError(f"Invalid review decision: {key!r} -> {value!r}")
+    _validate_decisions(decisions, {f["id"] for f in state["flags"]})
     return {"decisions": {k: v for k, v in decisions.items() if v != "—"}}
 
 
@@ -230,6 +233,13 @@ class CheckWorkflow:
         return self._outcome(ctx, thread_id, output)
 
     def resume(self, ctx: RunContext, thread_id: str, decisions: dict[str, str]) -> Outcome:
+        # Validate BEFORE resuming: once a resume value is delivered, LangGraph keeps it, so a
+        # value rejected inside the node would be replayed on every later attempt.
+        shown = {
+            f["id"]
+            for f in self._graph.get_state(self._config(ctx, thread_id)).values.get("flags", [])
+        }
+        _validate_decisions(decisions, shown)
         output = self._graph.invoke(
             Command(resume={"decisions": decisions}), self._config(ctx, thread_id)
         )

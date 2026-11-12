@@ -373,3 +373,127 @@ def test_old_reviews_json_is_imported_when_the_audit_log_is_new(tmp_path):
     (tmp_path / "reviews.json").write_text('{"A0001|dose_mismatch|metformin": "Confirm"}')
     app = TestClient(create_app(tmp_path, allow_llm=False))
     assert app.get("/api/reviews").json() == {"A0001|dose_mismatch|metformin": "Confirm"}
+
+
+def stored_app_with(client, status):
+    """The first stored application whose workflow run ends with the given status."""
+    for app_id in (a["app_id"] for a in client.get("/api/applications").json()):
+        body = client.post(f"/api/applications/{app_id}/workflow", json={}).json()
+        if body["status"] == status:
+            return app_id, body
+    raise AssertionError(f"no application ended as {status}")
+
+
+def test_workflow_finds_the_same_flags_as_a_plain_check(client):
+    app_id, body = stored_app_with(client, "awaiting_review")
+    detail = client.get(f"/api/applications/{app_id}").json()
+    plain = client.post(
+        "/api/check",
+        json={
+            "app_id": app_id,
+            "application": detail["application"],
+            "notes": detail["notes"],
+            "pharmacy": detail["pharmacy"],
+        },
+    ).json()
+    assert {f["id"] for f in body["flags"]} == {f["id"] for f in plain["flags"]}
+    assert body["path"][-1] == "human_review" and body["thread_id"]
+    assert body["reasons"] and set(body["reasons"]) <= {"flags", "unmapped_terms", "no_facts_read"}
+
+
+def test_a_clean_application_clears_without_a_pause(client):
+    _, body = stored_app_with(client, "auto_clear")
+    assert body["thread_id"] is None and body["reasons"] == [] and body["flags"] == []
+    assert body["path"] == ["extract", "compare", "finalize"] and body["facts_read"] > 0
+
+
+def test_resume_logs_each_decision_against_the_run_and_closes_the_run(data_dir):
+    app = TestClient(create_app(data_dir, allow_llm=False))
+    app_id, started = stored_app_with(app, "awaiting_review")
+    flag_ids = [f["id"] for f in started["flags"]]
+    decisions = {flag_ids[0]: "Confirm"}
+    if len(flag_ids) > 1:
+        decisions[flag_ids[1]] = "Dismiss"
+    done = app.post(f"/api/workflow/{started['thread_id']}/resume", json={"decisions": decisions})
+    assert done.status_code == 200 and done.json()["status"] == "reviewed"
+    assert done.json()["decisions"] == decisions
+    run = app.get(f"/api/audit/runs/{started['run_id']}").json()
+    assert run["source"] == "workflow" and run["status"] == "reviewed"
+    history = app.get("/api/reviews/history", params={"flag_id": flag_ids[0]}).json()
+    assert history[-1] == {
+        "ts": history[-1]["ts"],
+        "decision": "Confirm",
+        "run_id": started["run_id"],
+    }
+    assert app.get("/api/reviews").json()[flag_ids[0]] == "Confirm"
+    again = app.post(f"/api/workflow/{started['thread_id']}/resume", json={"decisions": {}})
+    assert again.status_code == 404
+
+
+def test_an_invalid_decision_is_rejected_and_the_review_stays_open(client):
+    _, started = stored_app_with(client, "awaiting_review")
+    url = f"/api/workflow/{started['thread_id']}/resume"
+    assert client.post(url, json={"decisions": {"A1|made_up|flag": "Confirm"}}).status_code == 422
+    assert (
+        client.post(url, json={"decisions": {started["flags"][0]["id"]: "Maybe"}}).status_code
+        == 422
+    )
+    assert client.post(url, json={"decisions": {}}).status_code == 200
+
+
+def test_workflow_with_retrieval_reports_what_was_sent(client):
+    _, body = stored_app_with(client, "awaiting_review")
+    app_id = body["flags"][0]["id"].split("|")[0]
+    rag = client.post(
+        f"/api/applications/{app_id}/workflow", json={"retrieval": "rag", "top_k": 2}
+    ).json()
+    assert rag["path"][0] == "retrieve" and rag["retrieval"]["k"] == 2
+    assert 0 < rag["retrieval"]["chars_sent"] < rag["retrieval"]["chars_total"]
+
+
+def test_workflow_runs_are_audited_with_their_reasons(client):
+    _, body = stored_app_with(client, "awaiting_review")
+    run = client.get(f"/api/audit/runs/{body['run_id']}").json()
+    assert run["status"] == "awaiting_review" and run["reasons"] == body["reasons"]
+    assert run["n_flags"] == len(body["flags"])
+
+
+def test_workflow_input_and_permission_errors(client):
+    assert client.post("/api/applications/NOPE/workflow", json={}).status_code == 404
+    assert (
+        client.post("/api/applications/A0001/workflow", json={"extractor": "llm"}).status_code
+        == 403
+    )
+    assert client.post("/api/applications/A0001/workflow", json={"top_k": 0}).status_code == 422
+    assert (
+        client.post("/api/workflow/not-a-thread/resume", json={"decisions": {}}).status_code == 422
+    )
+    assert (
+        client.post("/api/workflow/" + "0" * 16 + "/resume", json={"decisions": {}}).status_code
+        == 404
+    )
+
+
+def test_old_paused_reviews_are_dropped_beyond_the_cap(data_dir, monkeypatch):
+    monkeypatch.setattr("crosscheck.api.MAX_PAUSED_RUNS", 2)
+    app = TestClient(create_app(data_dir, allow_llm=False))
+    threads = []
+    for app_id in (a["app_id"] for a in app.get("/api/applications").json()):
+        body = app.post(f"/api/applications/{app_id}/workflow", json={}).json()
+        if body["thread_id"]:
+            threads.append(body["thread_id"])
+        if len(threads) == 3:
+            break
+    assert app.post(f"/api/workflow/{threads[0]}/resume", json={"decisions": {}}).status_code == 404
+    assert app.post(f"/api/workflow/{threads[2]}/resume", json={"decisions": {}}).status_code == 200
+
+
+def test_the_workflow_says_so_when_langgraph_is_not_installed(client, monkeypatch):
+    import sys
+
+    import crosscheck
+
+    monkeypatch.delattr(crosscheck, "graph", raising=False)
+    monkeypatch.setitem(sys.modules, "crosscheck.graph", None)
+    response = client.post("/api/applications/A0001/workflow", json={})
+    assert response.status_code == 501 and "LangGraph" in response.json()["detail"]

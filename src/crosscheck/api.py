@@ -6,8 +6,10 @@ The model-based extractor is disabled unless ALLOW_LLM=1 is set, so the page is 
 
 import os
 import time
+import uuid
+from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -82,6 +84,16 @@ class CheckRequest(BaseModel):
         return self
 
 
+class WorkflowIn(BaseModel):
+    extractor: Literal["rules", "llm"] = "rules"
+    retrieval: Literal["all", "rag"] = "all"
+    top_k: int = Field(default=DEFAULT_K, ge=1, le=10)
+
+
+class WorkflowResumeIn(BaseModel):
+    decisions: dict[str, Literal["—", "Confirm", "Dismiss"]] = Field(max_length=100)
+
+
 class ReviewIn(BaseModel):
     flag_id: str = Field(min_length=1, max_length=200)
     decision: Literal["—", "Confirm", "Dismiss"]
@@ -98,6 +110,16 @@ def default_extractor_factory(name: str) -> Extractor:
     from crosscheck.llm_extractor import LLMExtractor
 
     return LLMExtractor(ChatClient(get_settings()))
+
+
+MAX_PAUSED_RUNS = 100
+
+
+@dataclass
+class PausedRun:
+    ctx: object
+    run_id: str
+    app_id: str
 
 
 UsageProbe = Callable[[], tuple[int, int, float]]
@@ -261,6 +283,8 @@ def create_app(
     audit.import_legacy_reviews(data_dir / "reviews.json")
     probe = usage_probe or default_usage_probe
     label = model_label or default_model_label
+    paused: OrderedDict[str, PausedRun] = OrderedDict()
+    workflow_holder: dict = {}
     app = FastAPI(
         title="Application cross-check", docs_url="/api/docs", openapi_url="/api/openapi.json"
     )
@@ -411,6 +435,127 @@ def create_app(
             },
             "pharmacy": {row.drug: row.dose for row in rows},
             "retrieval": _retrieval_json(result.retrieval) if result.retrieval else None,
+        }
+
+    def _graph():
+        try:
+            from crosscheck import graph
+        except ImportError as error:
+            raise HTTPException(
+                501, "The review workflow needs LangGraph: pip install -e '.[graph]'"
+            ) from error
+        if "workflow" not in workflow_holder:
+            workflow_holder["workflow"] = graph.CheckWorkflow()
+        return graph, workflow_holder["workflow"]
+
+    @app.post("/api/applications/{app_id}/workflow")
+    def start_workflow(app_id: str, request: WorkflowIn) -> dict:
+        """Run the check as a graph. It either clears or pauses for a reviewer's decisions."""
+        graph, workflow = _graph()
+        found = _find(app_id)
+        if request.extractor == "llm" and not llm_enabled:
+            raise HTTPException(403, "The model extractor is disabled on this server.")
+        docs = [
+            LoadedDocument(n.doc_id, n.text, found.patient_id, "note", [], [])
+            for n in store.notes_for_mrn(found.mrn)
+        ]
+        started = time.perf_counter()
+        usage_before = probe() if request.extractor == "llm" else (0, 0, 0.0)
+        try:
+            embedder = None
+            index = None
+            if request.retrieval == "rag":
+                embedder = make_embedder(store.meta().get("embedder", ""))
+                index = store.index_for_mrn(found.mrn)
+            ctx = graph.RunContext(
+                found,
+                docs,
+                pharmacy_db.rows_for_mrn(found.mrn),
+                factory(request.extractor),
+                embedder,
+                request.top_k,
+                index,
+            )
+            thread_id = uuid.uuid4().hex[:16]
+            outcome = workflow.start(ctx, thread_id)
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except ConfigError as error:
+            raise HTTPException(503, str(error)) from error
+        except BudgetExceededError as error:
+            raise HTTPException(429, str(error)) from error
+        except Exception as error:
+            if request.extractor == "rules" and request.retrieval == "all":
+                raise
+            raise HTTPException(502, f"Model call failed: {type(error).__name__}") from error
+        usage_after = probe() if request.extractor == "llm" else (0, 0, 0.0)
+        flags_json = [_flag_json(app_id, f) for f in outcome.result.flags]
+        info = outcome.result.retrieval
+        is_llm = request.extractor == "llm"
+        run_id = audit.record_run(
+            RunRecord(
+                app_id=app_id,
+                source="workflow",
+                status=outcome.status,
+                extractor=request.extractor,
+                retrieval=request.retrieval,
+                n_flags=len(flags_json),
+                flags=flags_json,
+                model=label() if is_llm else None,
+                prompt_version=PROMPT_VERSION if is_llm else "rules",
+                top_k=info.k if info else None,
+                embedder=info.embedder if info else None,
+                chars_sent=info.chars_sent if info else None,
+                chars_total=info.chars_total if info else None,
+                dropped=len(outcome.result.dropped),
+                reasons=outcome.state.get("review_reasons", []),
+                unmapped=outcome.state.get("unmapped", []),
+                input_tokens=usage_after[0] - usage_before[0],
+                output_tokens=usage_after[1] - usage_before[1],
+                cost_usd=(usage_after[2] - usage_before[2]) if is_llm else 0.0,
+                duration_ms=round((time.perf_counter() - started) * 1000),
+            )
+        )
+        if outcome.status == "awaiting_review":
+            paused[thread_id] = PausedRun(ctx, run_id, app_id)
+            while len(paused) > MAX_PAUSED_RUNS:
+                paused.popitem(last=False)
+        return {
+            "run_id": run_id,
+            "thread_id": thread_id if outcome.status == "awaiting_review" else None,
+            "status": outcome.status,
+            "path": outcome.trace,
+            "reasons": outcome.state.get("review_reasons", []),
+            "flags": flags_json,
+            "unmapped": outcome.state.get("unmapped", []),
+            "facts_read": outcome.state.get("facts_read", 0),
+            "notes_available": outcome.state.get("notes_available", 0),
+            "retrieval": _retrieval_json(info) if info else None,
+        }
+
+    @app.post("/api/workflow/{thread_id}/resume")
+    def resume_workflow(
+        request: WorkflowResumeIn, thread_id: str = PathParam(pattern=r"^[a-f0-9]{16}$")
+    ) -> dict:
+        """Finish a paused run with the reviewer's decisions, and log each one."""
+        _, workflow = _graph()
+        run = paused.get(thread_id)
+        if run is None:
+            raise HTTPException(404, "No paused review with that id (it may have been finished).")
+        try:
+            outcome = workflow.resume(run.ctx, thread_id, request.decisions)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        for flag_id_, decision in request.decisions.items():
+            if decision != "—":
+                audit.add_decision(flag_id_, decision, run.run_id)
+        audit.set_status(run.run_id, outcome.status)
+        del paused[thread_id]
+        return {
+            "run_id": run.run_id,
+            "status": outcome.status,
+            "path": outcome.trace,
+            "decisions": outcome.state.get("decisions", {}),
         }
 
     @app.get("/api/reviews")

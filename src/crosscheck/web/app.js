@@ -428,7 +428,7 @@ function clearResults() {
   state.result = null;
   state.resultNotes = [];
   state.filter = null;
-  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence", "retrieval-info", "history"]) $(id).replaceChildren();
+  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence", "retrieval-info", "history", "workflow-view"]) $(id).replaceChildren();
   $("empty").hidden = false;
   $("facts-box").hidden = true;
   $("copy-report").disabled = true;
@@ -847,6 +847,98 @@ async function refreshFeedback() {
   }
 }
 
+const REASON_TEXT = {
+  flags: "There are flags to look at.",
+  unmapped_terms: "The notes contain terms the system could not map to a known name.",
+  no_facts_read: "Notes exist, but nothing could be read from them, so 'no flags' would mean nothing.",
+};
+
+function pathChips(path) {
+  const box = el("div", { class: "path" });
+  path.forEach((step, index) => {
+    if (index) box.append(el("span", { class: "arrow", text: "→" }));
+    box.append(el("span", { class: step === "human_review" ? "step pause" : "step", text: step.replaceAll("_", " ") }));
+  });
+  return box;
+}
+
+function workflowFlag(flag, picks, onPick) {
+  const card = el("div", { class: `card ${flag.severity}` }, el("div", { class: "card-head" }, el("span", { class: `badge ${flag.severity}`, text: SEVERITY_BADGE[flag.severity] }), el("span", { class: "field", text: flag.field }), el("span", { class: "type", text: flag.type })), el("div", { text: flag.message }));
+  for (const e of flag.evidence) card.append(el("div", { class: "evidence-line" }, el("span", {}, el("span", { class: "src", text: e.doc_id ? `note ${e.doc_id}` : "pharmacy database" }), el("span", { class: "q", text: `"${e.quote}"` }))));
+  const row = el("div", { class: "choices" }, el("span", { text: "Decision:" }));
+  const buttons = {};
+  const refresh = () => { for (const [name, b] of Object.entries(buttons)) b.setAttribute("aria-pressed", String(picks[flag.id] === name)); };
+  for (const name of ["Confirm", "Dismiss"]) {
+    buttons[name] = el("button", { type: "button", class: "choice", text: name, onclick: () => { picks[flag.id] = picks[flag.id] === name ? undefined : name; refresh(); onPick(); } });
+    row.append(buttons[name]);
+  }
+  refresh();
+  card.append(row);
+  return card;
+}
+
+function renderWorkflow(result) {
+  const box = $("workflow-view");
+  box.replaceChildren(pathChips(result.path));
+  const retrieval = result.retrieval ? ` RAG read ${pct(result.retrieval.chars_sent, result.retrieval.chars_total)} of the text.` : "";
+  box.append(el("p", { class: "muted small", text: `Read ${result.facts_read} fact(s) from ${result.notes_available} note(s).${retrieval}` }));
+  if (result.status === "auto_clear") {
+    box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "Cleared" })), el("div", { text: "The sources were read and agree with the application. No review needed." })));
+    return;
+  }
+  const reasons = el("div", { class: "reasons" });
+  for (const reason of result.reasons) reasons.append(el("div", { class: "warning", text: REASON_TEXT[reason] || reason }));
+  box.append(reasons);
+  if (result.unmapped.length) box.append(el("p", { class: "muted small", text: `Note terms to read yourself: ${result.unmapped.join("; ")}` }));
+  const picks = {};
+  const submit = el("button", { type: "button", class: "primary", text: "Submit review" });
+  const sync = () => { submit.textContent = `Submit review (${Object.values(picks).filter(Boolean).length} of ${result.flags.length} decided)`; };
+  for (const flag of result.flags) box.append(workflowFlag(flag, picks, sync));
+  sync();
+  submit.addEventListener("click", async () => {
+    const decisions = Object.fromEntries(Object.entries(picks).filter(([, v]) => v));
+    submit.disabled = true;
+    try {
+      const done = await api(`/api/workflow/${result.thread_id}/resume`, { method: "POST", body: JSON.stringify({ decisions }) });
+      state.reviews = await api("/api/reviews");
+      if (state.result) {
+        renderStats();
+        renderFlags();
+      }
+      refreshFeedback();
+      refreshHistory();
+      box.replaceChildren(pathChips(done.path));
+      box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "Reviewed" })), el("div", { text: `${Object.keys(done.decisions).length} decision(s) saved to the audit log.` })));
+    } catch (error) {
+      submit.disabled = false;
+      toast(error.message, "error");
+    }
+  });
+  box.append(submit);
+}
+
+async function runWorkflow() {
+  if (!state.appId) {
+    toast("Choose a stored application first.", "error");
+    return;
+  }
+  const button = $("workflow-btn");
+  button.disabled = true;
+  try {
+    const result = await api(`/api/applications/${encodeURIComponent(state.appId)}/workflow`, {
+      method: "POST",
+      body: JSON.stringify({ extractor: $("extractor").value, retrieval: $("retrieval").value, top_k: topK() }),
+    });
+    renderWorkflow(result);
+    showTab("result-tabs", "workflow");
+    refreshHistory();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* export */
 function reportText() {
   const r = state.result;
@@ -914,6 +1006,7 @@ async function init() {
   $("download-json").addEventListener("click", downloadJson);
   $("reveal").addEventListener("click", revealAnswerKey);
   $("retrieve-btn").addEventListener("click", searchRecord);
+  $("workflow-btn").addEventListener("click", runWorkflow);
   $("retrieve-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); searchRecord(); }
   });

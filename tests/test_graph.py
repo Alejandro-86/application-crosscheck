@@ -196,3 +196,14 @@ def test_retrieval_that_finds_nothing_in_existing_notes_goes_to_review():
 def test_a_normally_read_application_still_clears():
     outcome = CheckWorkflow().start(ctx_for(app(), [doc()]), "ok")
     assert outcome.status == "auto_clear" and outcome.state["facts_read"] > 0
+
+
+def test_a_rejected_decision_does_not_poison_the_paused_run():
+    workflow = CheckWorkflow()
+    ctx = ctx_for(app(conditions=()), [doc()])
+    paused = workflow.start(ctx, "retry")
+    flag = paused.review_request["flags"][0]["id"]
+    with pytest.raises(ValueError):
+        workflow.resume(ctx, "retry", {"A1|made_up|flag": "Confirm"})
+    done = workflow.resume(ctx, "retry", {flag: "Confirm"})  # the earlier bad value is not replayed
+    assert done.status == "reviewed" and done.state["decisions"] == {flag: "Confirm"}
