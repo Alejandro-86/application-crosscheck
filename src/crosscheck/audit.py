@@ -198,6 +198,19 @@ class AuditDB:
         with closing(self._connect()) as conn:
             return [self._run_dict(r) for r in conn.execute(query, params)]
 
+    def awaiting_reviews(self, app_id: str, limit: int = 20) -> list[dict]:
+        """Workflow runs for an application that were recorded as paused for review."""
+        with closing(self._connect()) as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT run_id FROM runs WHERE app_id = ? AND source = 'workflow' "
+                    "AND status = 'awaiting_review' ORDER BY ts DESC, rowid DESC LIMIT ?",
+                    (app_id, max(1, min(limit, 50))),
+                )
+            ]
+        return [run for run in (self.run(i) for i in ids) if run is not None]
+
     def run_by_thread(self, thread_id: str) -> dict | None:
         """The run recorded for a review thread, so a paused review survives a restart."""
         with closing(self._connect()) as conn:

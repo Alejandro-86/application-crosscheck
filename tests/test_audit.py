@@ -162,3 +162,23 @@ def test_an_audit_log_from_before_threads_were_recorded_is_upgraded(tmp_path):
     assert upgraded.run("old000000001")["thread_id"] is None
     new_id = upgraded.record_run(RunRecord("A2", "rules", "all", 0, thread_id="t1"))
     assert upgraded.run_by_thread("t1")["run_id"] == new_id
+
+
+def test_only_workflow_runs_still_awaiting_review_are_listed(db):
+    waiting = db.record_run(
+        RunRecord(
+            "A1", "rules", "all", 1, source="workflow", status="awaiting_review", thread_id="t1"
+        )
+    )
+    db.record_run(
+        RunRecord("A1", "rules", "all", 0, source="workflow", status="auto_clear", thread_id="t2")
+    )
+    db.record_run(RunRecord("A1", "rules", "all", 1, source="check", status="awaiting_review"))
+    db.record_run(
+        RunRecord(
+            "A2", "rules", "all", 1, source="workflow", status="awaiting_review", thread_id="t3"
+        )
+    )
+    assert [r["run_id"] for r in db.awaiting_reviews("A1")] == [waiting]
+    db.set_status(waiting, "reviewed")
+    assert db.awaiting_reviews("A1") == []

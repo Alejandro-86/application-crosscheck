@@ -27,6 +27,7 @@ const state = {
   resultNotes: [],
   filter: null,
   cache: {},
+  graph: null,
   seq: 0,
   timer: null,
 };
@@ -336,6 +337,7 @@ async function selectApp(id) {
     renderEditor();
     renderSidebar();
     refreshHistory();
+    showPendingReviews();
     if ($("extractor").value === "rules") runCheck();
     else setStatus("Loaded. Press Run check to use the model.");
   } catch (error) {
@@ -862,6 +864,97 @@ function pathChips(path) {
   return box;
 }
 
+/* the graph diagram, drawn from LangGraph's own description of itself */
+const SVG_NS = "http://www.w3.org/2000/svg";
+const NODE_W = 118;
+const NODE_H = 30;
+const NODE_GAP = 44;
+
+function svgEl(tag, attrs = {}, text) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function layoutGraph(graph) {
+  const depth = {};
+  graph.nodes.forEach((n) => { depth[n] = 0; });
+  let changed = true;
+  for (let guard = 0; changed && guard < 50; guard += 1) {
+    changed = false;
+    for (const edge of graph.edges) {
+      if (depth[edge.target] < depth[edge.source] + 1) {
+        depth[edge.target] = depth[edge.source] + 1;
+        changed = true;
+      }
+    }
+  }
+  const ordered = [...graph.nodes].sort((a, b) => depth[a] - depth[b] || a.localeCompare(b));
+  const pos = {};
+  ordered.forEach((n, i) => { pos[n] = { x: 72, y: 20 + i * NODE_GAP, i }; });
+  return { ordered, pos };
+}
+
+function drawGraph(graph) {
+  const { ordered, pos } = layoutGraph(graph);
+  const svg = svgEl("svg", {
+    viewBox: `0 0 250 ${20 + ordered.length * NODE_GAP}`,
+    class: "wf-svg",
+    role: "img",
+    "aria-label": "The LangGraph workflow graph",
+  });
+  const marker = svgEl("marker", { id: "wf-arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto" });
+  marker.append(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "garrow" }));
+  svg.append(svgEl("defs", {}, undefined));
+  svg.firstChild.append(marker);
+  const arcs = {};
+  for (const edge of graph.edges) {
+    const from = pos[edge.source];
+    const to = pos[edge.target];
+    const diff = to.i - from.i;
+    const cls = edge.conditional ? "gedge cond" : "gedge";
+    let d;
+    if (diff === 1) {
+      d = `M ${from.x} ${from.y + NODE_H / 2} L ${to.x} ${to.y - NODE_H / 2 - 3}`;
+    } else {
+      arcs[edge.source] = (arcs[edge.source] || 0) + 1;
+      const bulge = 26 + 11 * diff + 8 * arcs[edge.source];
+      const x = from.x + NODE_W / 2;
+      d = `M ${x} ${from.y} C ${x + bulge} ${from.y}, ${x + bulge} ${to.y}, ${x + 3} ${to.y}`;
+    }
+    svg.append(svgEl("path", { d, class: cls, "marker-end": "url(#wf-arrow)" }));
+  }
+  const groups = {};
+  const labels = {};
+  for (const id of ordered) {
+    const p = pos[id];
+    const special = id === "__start__" || id === "__end__";
+    const g = svgEl("g", { class: "gnode idle", "data-node": id });
+    g.append(svgEl("rect", { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2, width: NODE_W, height: NODE_H, rx: special ? 15 : 8 }));
+    labels[id] = svgEl("text", { x: p.x, y: p.y + 4, "text-anchor": "middle" }, special ? id.replaceAll("_", "") : id);
+    g.append(labels[id]);
+    svg.append(g);
+    groups[id] = g;
+  }
+  return {
+    svg,
+    setState(id, status) {
+      if (!groups[id]) return;
+      groups[id].setAttribute("class", `gnode ${status}`);
+    },
+    setCount(id, n) {
+      if (labels[id]) labels[id].textContent = n > 1 ? `${id} ×${n}` : id;
+    },
+    finish(visited, paused) {
+      for (const id of Object.keys(groups)) {
+        if (visited.has(id)) groups[id].setAttribute("class", `gnode ${id === paused ? "paused" : "done"}`);
+        else groups[id].setAttribute("class", "gnode skipped");
+      }
+    },
+  };
+}
+
 function workflowFlag(flag, picks, onPick) {
   const card = el("div", { class: `card ${flag.severity}` }, el("div", { class: "card-head" }, el("span", { class: `badge ${flag.severity}`, text: SEVERITY_BADGE[flag.severity] }), el("span", { class: "field", text: flag.field }), el("span", { class: "type", text: flag.type })), el("div", { text: flag.message }));
   for (const e of flag.evidence) card.append(el("div", { class: "evidence-line" }, el("span", {}, el("span", { class: "src", text: e.doc_id ? `note ${e.doc_id}` : "pharmacy database" }), el("span", { class: "q", text: `"${e.quote}"` }))));
@@ -877,13 +970,33 @@ function workflowFlag(flag, picks, onPick) {
   return card;
 }
 
-function renderWorkflow(result) {
-  const box = $("workflow-view");
+function groupRepeats(names) {
+  const counts = new Map();
+  for (const name of names) counts.set(name, (counts.get(name) || 0) + 1);
+  return [...counts].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name));
+}
+
+async function renderCheckpoints(box, threadId) {
+  try {
+    const history = (await api(`/api/workflow/${threadId}/history`)).slice().reverse();
+    const head = el("thead", {}, el("tr", {}, ...["Checkpoint", "Completed so far", "Runs next", "Flags"].map((t) => el("th", { text: t }))));
+    const body = el("tbody");
+    history.forEach((cp, index) => {
+      body.append(el("tr", {}, el("td", { text: String(index) }), el("td", { text: cp.path.join(" → ") || "(nothing yet)" }), el("td", { text: groupRepeats(cp.next).join(", ") || "(finished)" }), el("td", { text: String(cp.flags) })));
+    });
+    box.append(el("details", { class: "checkpoints" }, el("summary", { text: `LangGraph checkpoints (${history.length}), saved in SQLite` }), el("div", { class: "table-wrap" }, el("table", {}, head, body)), el("p", { class: "muted small", text: "Each row is a saved state of this run. A paused review is resumed from the last one, even after a server restart." })));
+  } catch (error) {
+    box.append(el("p", { class: "warning", text: error.message }));
+  }
+}
+
+function renderWorkflowDetail(box, result, diagram) {
   box.replaceChildren(pathChips(result.path));
   const retrieval = result.retrieval ? ` RAG read ${pct(result.retrieval.chars_sent, result.retrieval.chars_total)} of the text.` : "";
   box.append(el("p", { class: "muted small", text: `Read ${result.facts_read} fact(s) from ${result.notes_available} note(s).${retrieval}` }));
   if (result.status === "auto_clear") {
     box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "Cleared" })), el("div", { text: "The sources were read and agree with the application. No review needed." })));
+    renderCheckpoints(box, result.thread_id);
     return;
   }
   const reasons = el("div", { class: "reasons" });
@@ -907,14 +1020,52 @@ function renderWorkflow(result) {
       }
       refreshFeedback();
       refreshHistory();
+      diagram.finish(new Set(done.path.map((s) => s.split(" x")[0]).concat(["__start__", "__end__"])), null);
       box.replaceChildren(pathChips(done.path));
-      box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "Reviewed" })), el("div", { text: `${Object.keys(done.decisions).length} decision(s) saved to the audit log.` })));
+      box.append(el("div", { class: "card ok" }, el("div", { class: "card-head" }, el("span", { class: "badge ok", text: "Reviewed" })), el("div", { text: `${Object.keys(done.decisions).length} decision(s) saved to the audit log. The run resumed from its checkpoint.` })));
+      renderCheckpoints(box, result.thread_id);
     } catch (error) {
       submit.disabled = false;
       toast(error.message, "error");
     }
   });
   box.append(submit);
+  renderCheckpoints(box, result.thread_id);
+}
+
+async function openPendingReview(item) {
+  const view = $("workflow-view");
+  view.replaceChildren();
+  showTab("result-tabs", "workflow");
+  try {
+    if (!state.graph) state.graph = await api("/api/graph");
+    const diagram = drawGraph(state.graph);
+    const detail = el("div", { class: "wf-detail" });
+    view.append(el("div", { class: "wf-grid" }, el("div", { class: "wf-graph" }, diagram.svg), detail));
+    const visited = new Set(item.path.map((s) => s.split(" x")[0]).concat(["__start__"]));
+    diagram.finish(visited, "human_review");
+    const count = item.path.map((s) => s.match(/^extract_note x(\d+)$/)).find(Boolean);
+    if (count) diagram.setCount("extract_note", Number(count[1]));
+    renderWorkflowDetail(detail, item, diagram);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function showPendingReviews() {
+  if (!state.appId) return;
+  const appId = state.appId;
+  try {
+    const pending = await api(`/api/applications/${encodeURIComponent(appId)}/workflow/pending`);
+    const view = $("workflow-view");
+    if (!pending.length || state.appId !== appId || view.children.length) return;
+    const box = el("div", { class: "card data_quality" }, el("div", { class: "card-head" }, el("span", { class: "badge data_quality", text: "Waiting for review" })), el("div", { text: `${pending.length} paused review(s) for this application are saved in the checkpoint store. They survive a server restart.` }));
+    for (const item of pending) {
+      const when = new Date(item.started).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      box.append(el("div", { class: "evidence-line" }, el("span", { text: `Started ${when} · ${item.flags.length} flag(s) · ${item.reasons.join(", ")}` }), el("button", { type: "button", class: "link", text: "Open", onclick: () => openPendingReview(item) })));
+    }
+    view.append(box);
+  } catch (_) { /* the list is a convenience; the page works without it */ }
 }
 
 async function runWorkflow() {
@@ -924,15 +1075,72 @@ async function runWorkflow() {
   }
   const button = $("workflow-btn");
   button.disabled = true;
+  const view = $("workflow-view");
+  view.replaceChildren();
+  showTab("result-tabs", "workflow");
   try {
-    const result = await api(`/api/applications/${encodeURIComponent(state.appId)}/workflow`, {
+    if (!state.graph) state.graph = await api("/api/graph");
+    const diagram = drawGraph(state.graph);
+    const detail = el("div", { class: "wf-detail" }, el("p", { class: "muted small", text: "Running the graph…" }));
+    view.append(el("div", { class: "wf-grid" }, el("div", { class: "wf-graph" }, diagram.svg), detail));
+    diagram.setState("__start__", "done");
+    const rag = $("retrieval").value === "rag";
+    diagram.setState(rag ? "retrieve" : "select_notes", "running");
+    const response = await fetch(`/api/applications/${encodeURIComponent(state.appId)}/workflow/stream`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ extractor: $("extractor").value, retrieval: $("retrieval").value, top_k: topK() }),
     });
-    renderWorkflow(result);
-    showTab("result-tabs", "workflow");
+    if (!response.ok) {
+      let message = response.statusText;
+      try {
+        const body = await response.json();
+        message = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+      } catch (_) { /* keep the status text */ }
+      throw new Error(`${response.status}: ${message}`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let notes = 0;
+    let final = null;
+    const handle = (event) => {
+      if (event.event === "error") throw new Error(`${event.status}: ${event.detail}`);
+      if (event.event === "done") { final = event; return; }
+      if (event.event !== "node") return;
+      if (event.paused) { diagram.setState("human_review", "paused"); return; }
+      if (event.node === "extract_note") {
+        notes += 1;
+        diagram.setCount("extract_note", notes);
+        diagram.setState("extract_note", "running");
+        return;
+      }
+      diagram.setState(event.node, "done");
+      if (event.node === "retrieve") diagram.setState("select_notes", "running");
+      if (event.node === "select_notes") diagram.setState("extract_note", "running");
+      if (event.node === "compare") {
+        diagram.setState("extract_note", "done");
+        const reasons = (event.detail && event.detail.review_reasons) || [];
+        diagram.setState(reasons.length ? "human_review" : "finalize", "running");
+      }
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) if (line.trim()) handle(JSON.parse(line));
+      if (done) break;
+    }
+    if (buffer.trim()) handle(JSON.parse(buffer));
+    if (!final) throw new Error("The run ended without a result.");
+    const visited = new Set(final.path.map((s) => s.split(" x")[0]).concat(["__start__"]));
+    if (final.status !== "awaiting_review") visited.add("__end__");
+    diagram.finish(visited, final.status === "awaiting_review" ? "human_review" : null);
+    renderWorkflowDetail(detail, final, diagram);
     refreshHistory();
   } catch (error) {
+    view.replaceChildren(el("p", { class: "warning", text: error.message }));
     toast(error.message, "error");
   } finally {
     button.disabled = false;

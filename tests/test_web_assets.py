@@ -79,3 +79,15 @@ def test_workflow_controls_exist_in_the_page():
     for element_id in ("workflow-btn", "workflow-view"):
         assert f'id="{element_id}"' in page, element_id
     assert 'data-tab="workflow"' in page and 'data-panel="workflow"' in page
+
+
+def test_the_workflow_view_streams_and_draws_the_real_graph():
+    script = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "/workflow/stream" in script and "/api/graph" in script
+    assert "/history" in script and "createElementNS" in script
+    assert "innerHTML" not in script
+
+
+def test_the_workflow_tab_lists_paused_reviews_from_the_checkpoint_store():
+    script = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "/workflow/pending" in script and "showPendingReviews" in script

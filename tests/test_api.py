@@ -561,3 +561,28 @@ def test_the_graph_structure_endpoint_serves_langgraphs_own_description(client):
     )
     assert any(e["source"] == "select_notes" and e["conditional"] for e in described["edges"])
     assert "flowchart" in described["mermaid"] or "graph TD" in described["mermaid"]
+
+
+def test_paused_reviews_are_listed_after_a_restart_and_leave_the_list_once_reviewed(data_dir):
+    first = TestClient(create_app(data_dir, allow_llm=False))
+    app_id, started = stored_app_with(first, "awaiting_review")
+
+    restarted = TestClient(create_app(data_dir, allow_llm=False))
+    pending = restarted.get(f"/api/applications/{app_id}/workflow/pending").json()
+    item = next(p for p in pending if p["thread_id"] == started["thread_id"])
+    assert item["status"] == "awaiting_review" and item["path"][-1] == "human_review"
+    assert item["reasons"] == started["reasons"]
+    assert {f["id"] for f in item["flags"]} == {f["id"] for f in started["flags"]}
+    assert item["flags"][0]["evidence"] and item["flags"][0]["message"]
+
+    flag = item["flags"][0]["id"]
+    done = restarted.post(
+        f"/api/workflow/{item['thread_id']}/resume", json={"decisions": {flag: "Dismiss"}}
+    )
+    assert done.status_code == 200
+    after = restarted.get(f"/api/applications/{app_id}/workflow/pending").json()
+    assert item["thread_id"] not in {p["thread_id"] for p in after}
+
+
+def test_pending_reviews_for_an_unknown_application_is_404(client):
+    assert client.get("/api/applications/NOPE/workflow/pending").status_code == 404

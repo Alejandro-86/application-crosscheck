@@ -246,3 +246,27 @@ details summary { cursor: pointer; color: var(--muted); margin: .8rem 0 .3rem; }
 .choices { display: flex; gap: .4rem; align-items: center; margin-top: .5rem; font-size: .8rem; color: var(--muted); }
 
 .brand > div { min-width: 0; }
+
+/* the workflow graph */
+.wf-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 1rem; align-items: start; }
+.wf-detail { min-width: 0; overflow-wrap: break-word; }
+.checkpoints td, .checkpoints th { white-space: nowrap; }
+.checkpoints td:nth-child(2) { white-space: normal; min-width: 9rem; }
+@media (max-width: 900px) { .wf-grid { grid-template-columns: 1fr; } }
+.wf-graph { position: sticky; top: 70px; }
+.wf-svg { width: 100%; height: auto; max-width: 250px; }
+.wf-svg .gedge { fill: none; stroke: var(--muted); stroke-width: 1.4; opacity: .7; }
+.wf-svg .gedge.cond { stroke-dasharray: 5 4; }
+.wf-svg .garrow { fill: var(--muted); }
+.gnode rect { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.2; transition: fill .25s, stroke .25s; }
+.gnode text { fill: var(--muted); font: 600 11.5px ui-monospace, Menlo, monospace; }
+.gnode.done rect { fill: var(--accent-soft); stroke: var(--accent); }
+.gnode.done text { fill: var(--accent); }
+.gnode.running rect { fill: var(--accent-soft); stroke: var(--accent); animation: node-pulse 1.1s ease-in-out infinite; }
+.gnode.running text { fill: var(--accent); }
+.gnode.paused rect { fill: var(--data_quality-soft); stroke: var(--data_quality); stroke-width: 2; }
+.gnode.paused text { fill: var(--data_quality); }
+.gnode.skipped { opacity: .4; }
+@keyframes node-pulse { 50% { stroke-width: 3; } }
+@media (prefers-reduced-motion: reduce) { .gnode.running rect { animation: none; } }
+.checkpoints { margin-top: 1rem; }
