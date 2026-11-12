@@ -300,6 +300,7 @@ async function selectApp(id) {
     $("case-label").textContent = "Blank application";
     $("form-box").hidden = true;
     $("retrieve-results").replaceChildren();
+    refreshHistory();
     $("answer-key-box").hidden = true;
     clearResults();
     renderEditor();
@@ -334,6 +335,7 @@ async function selectApp(id) {
     clearResults();
     renderEditor();
     renderSidebar();
+    refreshHistory();
     if ($("extractor").value === "rules") runCheck();
     else setStatus("Loaded. Press Run check to use the model.");
   } catch (error) {
@@ -411,6 +413,7 @@ async function runCheck() {
     if (state.appId) state.cache[state.appId] = result.flags.length;
     renderResult();
     renderSidebar();
+    refreshHistory();
     const when = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const read = result.retrieval ? ` reading ${Math.round((100 * result.retrieval.chars_sent) / Math.max(1, result.retrieval.chars_total))}% of the note text (RAG)` : "";
     setStatus(`Checked at ${when} with the ${result.extractor} extractor${read}.`);
@@ -425,7 +428,7 @@ function clearResults() {
   state.result = null;
   state.resultNotes = [];
   state.filter = null;
-  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence", "retrieval-info"]) $(id).replaceChildren();
+  for (const id of ["stats", "warnings", "flags", "compare", "facts", "evidence", "pharm-evidence", "retrieval-info", "history"]) $(id).replaceChildren();
   $("empty").hidden = false;
   $("facts-box").hidden = true;
   $("copy-report").disabled = true;
@@ -524,9 +527,10 @@ function flagCard(flag) {
       onclick: async () => {
         const next = state.reviews[flag.id] === name ? "—" : name;
         try {
-          state.reviews = await api("/api/reviews", { method: "PUT", body: JSON.stringify({ flag_id: flag.id, decision: next }) });
+          state.reviews = await api("/api/reviews", { method: "PUT", body: JSON.stringify({ flag_id: flag.id, decision: next, run_id: state.result ? state.result.run_id : null }) });
           refresh();
           renderStats();
+          refreshFeedback();
         } catch (error) {
           toast(error.message, "error");
         }
@@ -758,6 +762,91 @@ async function searchRecord() {
   }
 }
 
+function pct(part, whole) {
+  return whole ? `${Math.round((100 * part) / whole)}%` : "n/a";
+}
+
+function runSummary(run) {
+  const when = new Date(run.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const read = run.retrieval === "rag" ? `RAG top-${run.top_k}, ${pct(run.chars_sent, run.chars_total)} of text` : "all text";
+  const what = `${run.extractor === "llm" ? run.model || "model" : "rules"} · ${read} · ${run.n_flags} flag${run.n_flags === 1 ? "" : "s"}`;
+  const cost = run.cost_usd ? `$${run.cost_usd.toFixed(4)}` : "free";
+  return el("summary", {}, el("span", { class: "when", text: when }), el("span", { class: "what", text: what }), el("span", { class: "meta", text: `${cost} · ${run.duration_ms} ms` }));
+}
+
+async function openRun(run, body) {
+  try {
+    const full = await api(`/api/audit/runs/${run.run_id}`);
+    body.replaceChildren();
+    const facts = [
+      ["Run", full.run_id],
+      ["Source / status", `${full.source} / ${full.status}`],
+      ["Extractor", full.extractor],
+      ["Model", full.model || "none"],
+      ["Prompt version", full.prompt_version || "none"],
+      ["Embedder", full.embedder || "none"],
+      ["Tokens in / out", `${full.input_tokens} / ${full.output_tokens}`],
+      ["Dropped for missing evidence", String(full.dropped)],
+      ["Unmapped note terms", full.unmapped.join("; ") || "none"],
+    ];
+    const grid = el("div", { class: "kv" });
+    for (const [key, value] of facts) grid.append(el("span", { text: key }), el("span", { text: value }));
+    body.append(grid);
+    if (!full.flags.length) body.append(el("p", { class: "muted", text: "No flags in this run." }));
+    for (const flag of full.flags) {
+      const card = el("div", { class: `card ${flag.severity}` }, el("div", { class: "card-head" }, el("span", { class: `badge ${flag.severity}`, text: SEVERITY_BADGE[flag.severity] }), el("span", { class: "field", text: flag.field }), el("span", { class: "type", text: flag.type })));
+      for (const e of flag.evidence) card.append(el("div", { class: "evidence-line" }, el("span", {}, el("span", { class: "src", text: e.doc_id ? `note ${e.doc_id}` : "pharmacy database" }), el("span", { class: "q", text: `"${e.quote}"` }))));
+      body.append(card);
+    }
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function refreshHistory() {
+  const box = $("history");
+  box.replaceChildren();
+  if (!state.appId) {
+    box.append(el("p", { class: "empty", text: "Choose a stored application to see its history." }));
+    return;
+  }
+  try {
+    const runs = await api(`/api/audit/runs?app_id=${encodeURIComponent(state.appId)}&limit=20`);
+    if (!runs.length) box.append(el("p", { class: "empty", text: "No checks recorded for this application yet." }));
+    for (const run of runs) {
+      const body = el("div", { class: "run-body" });
+      const details = el("details", { class: "run" }, runSummary(run), body);
+      details.addEventListener("toggle", () => { if (details.open && !body.children.length) openRun(run, body); });
+      box.append(details);
+    }
+  } catch (error) {
+    box.append(el("p", { class: "warning", text: error.message }));
+  }
+}
+
+async function refreshFeedback() {
+  const box = $("review-stats");
+  try {
+    const stats = (await api("/api/review-stats")).by_type;
+    box.replaceChildren();
+    const types = Object.keys(stats);
+    if (!types.length) {
+      box.append(el("p", { class: "muted small", text: "No reviewer decisions yet. Confirm or Dismiss a flag to start." }));
+      return;
+    }
+    const head = el("thead", {}, el("tr", {}, ...["Flag type", "Confirmed", "Dismissed", "Dismissed share"].map((t) => el("th", { text: t }))));
+    const body = el("tbody");
+    for (const type of types) {
+      const row = stats[type];
+      body.append(el("tr", {}, el("td", { text: type }), el("td", { text: String(row.Confirm) }), el("td", { text: String(row.Dismiss) }), el("td", { text: `${Math.round(row.dismiss_rate * 100)}%` })));
+    }
+    box.append(el("div", { class: "table-wrap" }, el("table", {}, head, body)));
+    box.append(el("p", { class: "muted small", text: "A high dismissed share means the flag type is noisy: a reviewer signal worth feeding back into the evaluation." }));
+  } catch (error) {
+    box.replaceChildren(el("p", { class: "warning", text: error.message }));
+  }
+}
+
 /* export */
 function reportText() {
   const r = state.result;
@@ -868,6 +957,7 @@ async function init() {
       pill.classList.add("on");
     }
     renderSidebar();
+    refreshFeedback();
     const first = apps.find((a) => a.planted_errors > 0) || apps[0];
     if (first) await selectApp(first.app_id);
     else await selectApp(null);
