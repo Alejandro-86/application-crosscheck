@@ -45,9 +45,14 @@ The only measured results are for the **rule-based baseline**, in [docs/results-
 
 ## Web app and API
 
-`make web` serves a small page (plain HTML/JS, no build step) and a JSON API from one process. On the page you can load a generated application or start blank, edit the declared
-conditions, medications and allergies, edit or paste clinical notes and pharmacy rows, and press **Check**. Flags appear with their evidence quotes, the quoted passages are highlighted
-in the notes, and each flag can be confirmed or dismissed.
+`make web` serves a single-page app (plain HTML/CSS/JS, no build step) and a JSON API from one process.
+
+- **Case list:** a searchable sidebar of the generated applications, with a badge showing planted errors, then the number of flags once checked. Start from a blank application too.
+- **Editors:** declared conditions and allergies are chip inputs (abbreviations such as HTN work); medications and pharmacy rows are editable rows; clinical notes are text areas you can add, remove or paste into.
+- **Live checking:** with the rules extractor the check re-runs shortly after every edit (or press Ctrl/Cmd+Enter). The model extractor only runs when you press **Run check**.
+- **Results:** summary cards (discrepancies, source conflicts, unverified, reviewed) that double as filters; flag cards with evidence quotes and Confirm / Dismiss decisions; a **Declared vs record** table comparing the application, the notes and the pharmacy side by side; and an **Evidence** view where the cited passages are highlighted and **Locate** jumps to them.
+- **Export:** copy a Markdown report or download the JSON result.
+- **Dark mode:** the toggle in the top right switches themes. The choice is remembered, and the first visit follows your system setting.
 
 | Endpoint | Purpose |
 |---|---|
