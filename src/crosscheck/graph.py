@@ -6,8 +6,9 @@
 The pipeline functions are the same ones `pipeline.check_application` uses, so the graph returns
 the same flags. What the graph adds is control flow a plain function does not give you:
   - a conditional entry (retrieve only when an embedder is supplied),
-  - a routing rule (review when there are flags OR the notes contained terms the system could not
-    read, so an unreadable note can never be waved through as "clear"),
+  - a routing rule: review when there are flags, OR the notes contained terms the system could not
+    read, OR notes exist but the extractor read no facts from any of them. "Clear" must mean the
+    sources were read and agree, never "nothing was found",
   - a real pause: `human_review` interrupts, the state is checkpointed, and the run resumes with
     the reviewer's decisions without redoing the extraction.
 
@@ -47,6 +48,9 @@ class CheckState(TypedDict, total=False):
     app_id: str
     flags: list[dict]
     unmapped: list[str]
+    facts_read: int
+    notes_available: int
+    review_reasons: list[str]
     dropped: int
     chars_sent: int
     chars_total: int
@@ -117,6 +121,14 @@ def compare_and_ground(state: CheckState, config) -> CheckState:
     dropped = ungrounded_flags(flags, {d.doc_id: d.text for d in ctx.used_docs}, ctx.pharmacy_rows)
     kept = [f for f in flags if f not in dropped]
     ctx.result = CheckResult(ctx.app.app_id, kept, facts, dropped, ctx.results, ctx.retrieval)
+    facts_read = sum(len(r.facts) for r in ctx.results)
+    reasons = []
+    if kept:
+        reasons.append("flags")
+    if facts.unmapped:
+        reasons.append("unmapped_terms")
+    if ctx.docs and facts_read == 0:
+        reasons.append("no_facts_read")
     return {
         "flags": [
             {
@@ -128,13 +140,16 @@ def compare_and_ground(state: CheckState, config) -> CheckState:
             for f in kept
         ],
         "unmapped": facts.unmapped,
+        "facts_read": facts_read,
+        "notes_available": len(ctx.docs),
+        "review_reasons": reasons,
         "dropped": len(dropped),
     }
 
 
 def route(state: CheckState) -> str:
-    """Review whenever there is anything to look at, including notes the system could not read."""
-    return "human_review" if state.get("flags") or state.get("unmapped") else "finalize"
+    """Review whenever there is something to look at or the sources were not really read."""
+    return "human_review" if state.get("review_reasons") else "finalize"
 
 
 def human_review(state: CheckState, config) -> CheckState:
@@ -142,7 +157,12 @@ def human_review(state: CheckState, config) -> CheckState:
     if not ctx.trace or ctx.trace[-1] != "human_review":  # this node re-enters on resume
         ctx.trace.append("human_review")
     reply = interrupt(
-        {"app_id": state["app_id"], "flags": state["flags"], "unmapped": state["unmapped"]}
+        {
+            "app_id": state["app_id"],
+            "reasons": state["review_reasons"],
+            "flags": state["flags"],
+            "unmapped": state["unmapped"],
+        }
     )
     decisions = reply["decisions"]  # wrapped: LangGraph ignores an empty resume value
     known = {f["id"] for f in state["flags"]}
@@ -247,6 +267,8 @@ def main() -> None:
     workflow = CheckWorkflow()
     outcome = workflow.start(ctx, thread_id=app.app_id)
     print("path:", " -> ".join(outcome.trace), "| status:", outcome.status)
+    if outcome.state.get("review_reasons"):
+        print("  review because:", ", ".join(outcome.state["review_reasons"]))
     for flag in outcome.state.get("flags", []):
         print(f"  {flag['severity']:<11} {flag['type']} / {flag['field']}")
     if outcome.state.get("unmapped"):
