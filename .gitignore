@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 .env.*
+!.env.example
 .DS_Store
 .pytest_cache/
 .ipynb_checkpoints/
