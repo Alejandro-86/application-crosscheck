@@ -72,3 +72,10 @@ def test_history_and_feedback_containers_exist_in_the_page():
     for element_id in ("history", "review-stats", "feedback-box"):
         assert f'id="{element_id}"' in page, element_id
     assert 'data-tab="history"' in page and 'data-panel="history"' in page
+
+
+def test_workflow_controls_exist_in_the_page():
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    for element_id in ("workflow-btn", "workflow-view"):
+        assert f'id="{element_id}"' in page, element_id
+    assert 'data-tab="workflow"' in page and 'data-panel="workflow"' in page
