@@ -4,6 +4,34 @@ A small demo: cross-check synthetic insurance applications against several sourc
 
 > All data is synthetic. No real patient or employer data is used. Flags are data-quality signals for human review, not underwriting decisions.
 
+## Screenshots
+
+A flagged application, with the raw form the scraper parsed and each flag's quote:
+
+![Overview: an application, its raw form and two discrepancies with quotes](docs/img/overview.png)
+
+**Locate** jumps to the quoted sentence in the note (a free-text letter), so a reviewer can check the evidence in seconds:
+
+![Evidence view: the quoted sentences highlighted in a narrative letter](docs/img/evidence.png)
+
+Declared vs record, in dark mode. Each row says what the application, the notes and the pharmacy database show:
+
+![Declared vs record table in dark mode](docs/img/compare-dark.png)
+
+Retrieval: highlighted lines were sent to the extractor, struck-through ones were not:
+
+![Retrieval view: which note lines were sent and which were skipped](docs/img/retrieval.png)
+
+The review workflow pauses, and says why, when there are flags or the notes contain terms the system could not read:
+
+![Workflow view: a paused review with two reasons and a flag to decide](docs/img/workflow.png)
+
+Every check is recorded, and reviewer decisions are logged:
+
+![History view: an audit record and the reviewer feedback table](docs/img/history.png)
+
+A three-minute walkthrough with exact clicks and talking points is in [docs/demo-script.md](docs/demo-script.md).
+
 ## What it does
 
 An application arrives as a **full raw-text form**. A scraper parses it into a database, and the app reads from that database. The declared conditions, medications and allergies are then checked against two sources:

@@ -106,7 +106,7 @@ kbd { font: .7rem ui-monospace, Menlo, monospace; padding: .05rem .3rem; border-
 .panel-head { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .6rem; }
 .head-actions { display: flex; gap: .4rem; flex-wrap: wrap; }
 .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin: .6rem 0 .8rem; overflow-x: auto; }
-.tabs button { border: 0; background: transparent; color: var(--muted); padding: .5rem .8rem; border-bottom: 2px solid transparent; border-radius: 0; margin-bottom: -1px; white-space: nowrap; }
+.tabs button { border: 0; background: transparent; color: var(--muted); padding: .5rem .6rem; border-bottom: 2px solid transparent; border-radius: 0; margin-bottom: -1px; white-space: nowrap; }
 .tabs button:hover { color: var(--text); background: transparent; }
 .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 [hidden] { display: none !important; }
@@ -244,3 +244,5 @@ details summary { cursor: pointer; color: var(--muted); margin: .8rem 0 .3rem; }
 .path .arrow { color: var(--muted); font-size: .8rem; }
 .reasons { display: grid; gap: .3rem; margin: .5rem 0; }
 .choices { display: flex; gap: .4rem; align-items: center; margin-top: .5rem; font-size: .8rem; color: var(--muted); }
+
+.brand > div { min-width: 0; }
