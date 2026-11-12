@@ -92,6 +92,12 @@ def test_adhoc_check_flags_with_evidence(client):
     assert contradicted["evidence"][0]["quote"].startswith("No history of")
     assert contradicted["evidence"][0]["doc_id"] == "N1"
     assert result["facts"]["medications"] == {"metformin": [1000]}
+    assert result["declared"] == {
+        "conditions": ["asthma", "osteoarthritis"],
+        "medications": {"metformin": 500},
+        "allergies": [],
+    }
+    assert result["pharmacy"] == {"metformin": 850}
 
 
 def test_unknown_declared_terms_are_reported_not_guessed(client):
