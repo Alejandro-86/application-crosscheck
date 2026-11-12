@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 from crosscheck.llm_extractor import LLMExtractor, parse_json
 
@@ -95,3 +96,15 @@ def test_unknown_terms_are_reported_not_guessed():
     result = LLMExtractor(ScriptedChat([json.dumps(reply)])).extract("D1", NOTE)
     assert result.facts == []
     assert set(result.unmapped) == {"gout", "Mysterypil"}
+
+
+def test_the_extractor_does_not_send_a_temperature():
+    seen = []
+
+    class Chat:
+        def complete(self, messages, **kwargs):
+            seen.append(kwargs)
+            return SimpleNamespace(text='{"conditions": []}')
+
+    LLMExtractor(Chat()).extract("D1", "No findings.")
+    assert seen == [{}]

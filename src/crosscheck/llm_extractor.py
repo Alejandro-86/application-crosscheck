@@ -70,7 +70,9 @@ class LLMExtractor:
         ]
         best = ExtractionResult(doc_id=doc_id, attempts=0)
         for attempt in range(1, self._max_retries + 2):
-            reply = self._chat.complete(messages, temperature=0).text
+            # No temperature is sent: some models accept only their default. The response cache
+            # keeps repeated runs on the same input identical.
+            reply = self._chat.complete(messages).text
             data = parse_json(reply)
             if data is None:
                 problem = "Your reply was not a single valid JSON object. Return only the JSON."
