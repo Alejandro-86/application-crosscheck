@@ -3,23 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from clinical_rag_lab.cache import Cache, make_key
-from clinical_rag_lab.config import ConfigError, Settings
-from clinical_rag_lab.costs import BudgetExceededError, UsageLog, cost_usd, load_prices
-from clinical_rag_lab.embeddings import Embedder
-from clinical_rag_lab.llm import ChatClient
+from crosscheck.cache import Cache, make_key
+from crosscheck.config import ConfigError, Settings
+from crosscheck.costs import BudgetExceededError, UsageLog, cost_usd, load_prices
+from crosscheck.llm import ChatClient
 
 
 def make_settings(tmp_path, *, chat_model="gpt-6-luna", max_spend=10.0) -> Settings:
     prices = tmp_path / "prices.toml"
-    prices.write_text(
-        '[models."gpt-6-luna"]\ninput = 1.0\noutput = 2.0\n'
-        '[models."embed-test"]\ninput = 0.5\noutput = 0.0\n'
-    )
+    prices.write_text('[models."gpt-6-luna"]\ninput = 1.0\noutput = 2.0\n')
     return Settings(
         openai_api_key="test",
         chat_model=chat_model,
-        embed_model="embed-test",
         max_spend_usd=max_spend,
         cache_path=tmp_path / "cache.sqlite",
         usage_path=tmp_path / "usage.jsonl",
@@ -41,19 +36,6 @@ class FakeChat:
             choices=[SimpleNamespace(message=message)],
             usage=SimpleNamespace(prompt_tokens=1_000_000, completion_tokens=500_000),
         )
-
-
-class FakeEmbeddings:
-    def __init__(self):
-        self.calls = 0
-        self.embeddings = SimpleNamespace(create=self.create)
-
-    def create(self, *, model, input):
-        self.calls += 1
-        data = [
-            SimpleNamespace(index=i, embedding=[float(len(t)), 1.0]) for i, t in enumerate(input)
-        ]
-        return SimpleNamespace(data=data, usage=SimpleNamespace(prompt_tokens=2_000_000))
 
 
 def test_cache_round_trip(tmp_path):
@@ -98,18 +80,6 @@ def test_budget_cap_blocks_new_calls(tmp_path):
 def test_chat_requires_a_model(tmp_path):
     with pytest.raises(ConfigError):
         ChatClient(make_settings(tmp_path, chat_model=""), client=FakeChat())
-
-
-def test_embedder_caches_per_text(tmp_path):
-    fake = FakeEmbeddings()
-    embedder = Embedder(make_settings(tmp_path), client=fake)
-    first = embedder.embed(["alpha", "be"])
-    second = embedder.embed(["alpha", "be"])
-    third = embedder.embed(["alpha", "gamma"])
-    assert first == second
-    assert fake.calls == 2
-    assert third[0] == first[0]
-    assert third[1] == [5.0, 1.0]
 
 
 def test_usage_log_total(tmp_path):

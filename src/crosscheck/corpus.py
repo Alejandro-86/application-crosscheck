@@ -4,6 +4,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from crosscheck.applications import Application, application_from_dict
+from crosscheck.pharmacy import PharmacyRow
+from crosscheck.synthetic import Patient, patient_from_dict
+
 
 @dataclass
 class LoadedDocument:
@@ -34,5 +38,16 @@ def load_documents(data_dir: Path) -> list[LoadedDocument]:
     return documents
 
 
-def load_questions(data_dir: Path) -> list[dict]:
-    return json.loads((data_dir / "questions.json").read_text(encoding="utf-8"))
+def load_patients(data_dir: Path) -> list[Patient]:
+    raw = json.loads((data_dir / "patients.json").read_text(encoding="utf-8"))
+    return [patient_from_dict(p) for p in raw]
+
+
+def load_applications(data_dir: Path) -> list[Application]:
+    raw = json.loads((data_dir / "applications.json").read_text(encoding="utf-8"))
+    return [application_from_dict(a) for a in raw]
+
+
+def load_pharmacy(data_dir: Path) -> list[PharmacyRow]:
+    raw = json.loads((data_dir / "pharmacy.json").read_text(encoding="utf-8"))
+    return [PharmacyRow(**r) for r in raw]

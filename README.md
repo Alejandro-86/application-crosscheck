@@ -1,67 +1,87 @@
-# clinical-rag-lab
+# crosscheck
 
-A hands-on lab for learning production LLM engineering by building one small system end to end: extraction and question answering over **synthetic clinical-style
-documents**, with retrieval, guardrails, evaluation and tracing added week by week.
+A small demo: cross-check synthetic insurance applications against several sources and flag inaccurate or undisclosed data for a human reviewer.
 
-> Status: work in progress. Nothing here has been evaluated on real data, and no real patient or employer data is used. All documents are synthetic.
+> All data is synthetic. No real patient or employer data is used. Flags are data-quality signals for human review, not underwriting decisions.
 
-## What is already here (the scaffold)
+## What it does
 
-- **Synthetic corpus**: a seeded generator for clinical-style notes with ground-truth labels and planted hard cases (negation, abbreviations and brand names, similar patients,
-  mid-document dose changes). `make data` regenerates it byte-for-byte from the seed.
-- **Question set**: template questions with gold answers and gold source documents, including questions no document can answer.
-- **OpenAI clients** with a sqlite response cache, token and cost logging (`runs/usage.jsonl`) and a hard spend cap (`MAX_SPEND_USD`).
-- **Tests and CI**: pytest and ruff run on every pull request. The tests use fake clients, so no network or key is needed.
+An application declares conditions, medications and allergies. The system checks those declarations against two sources:
 
-## What is yours to build (not yet in the repo)
+- **Clinical notes** (free text): an extractor pulls out facts, each with a verbatim quote.
+- **A pharmacy database** (structured rows): used as an independent second source for medications.
 
-Retrieval and chunking, the retrieval and answer evals, LLM-as-judge, guardrails and the agent. See the plan below.
+Deterministic rules compare the application with the sources and produce flags. Every discrepancy cites its evidence. If nothing is found, the flag says "unverified"; it never claims a contradiction without evidence.
 
-## Plan
+```
+application ──┐
+notes ──► extractor (rules baseline | LLM) ──► facts + quotes ──► terminology table
+pharmacy rows ─────────────────────────────────────────────────────┐        │
+                                                                    ▼        ▼
+                                                      deterministic comparison ──► flags
+                                                                    │
+                                   every discrepancy needs a verifiable quote, else it is dropped
+```
 
-| Week | Topic | What gets added to the repo |
+| Flag | Meaning | Severity |
 |---|---|---|
-| 1 | RAG | Baseline retrieval, then chunking, hybrid (BM25 + vector) search and reranking; recall@k measured separately from answer quality |
-| 2 | Evaluation | Labelled set, LLM-as-judge validated against human labels, error analysis, a regression gate in CI |
-| 3 | Guardrails | Input/output checks (PII, schema, topic), human-in-the-loop review, prompt-injection tests |
-| 4 | Agents and tracing | Tool use, a LangGraph workflow, tracing and cost per request |
+| `undisclosed_condition` / `undisclosed_medication` / `undisclosed_allergy` | The sources document it, the application does not | discrepancy |
+| `contradicted_declaration` | Declared, but the record explicitly denies it ("No history of ...") | discrepancy |
+| `dose_mismatch` | Declared dose matches none of the sources | discrepancy |
+| `source_conflict` | The notes and the pharmacy disagree with each other | data quality |
+| `unverified_declaration` / `unverified_medication` | Declared, but nothing in the sources mentions it (absence is not proof) | unverified |
 
-Each week ends with a short write-up with before/after numbers in `docs/`. Failures are written up too.
+## Design choices
 
-## Principles
+- **The model only extracts; code decides.** The LLM returns facts with quotes. Code checks each quote occurs verbatim in the note (invented ones are dropped, with bounded retries), maps terms with a terminology table (unknown terms are reported, not guessed), and the comparison rules are plain Python.
+- **No citation, no flag.** A discrepancy whose evidence cannot be found in the sources is removed before it reaches a reviewer.
+- **Two sources.** Notes and pharmacy can disagree, which is reported separately from application errors.
+- **Evaluation at two levels.** Extraction is scored against the generator's labels; flags are scored against the flags a perfect extractor would produce. The rules are identical in both, so any gap comes from extraction.
+- **Cost control.** Every model call is cached on disk, logged with token counts and estimated cost, and refused once logged spend reaches `MAX_SPEND_USD`.
 
-- Measure before and after every change; report what a result does and does not prove.
-- The model proposes; deterministic code decides what is allowed.
-- Synthetic data only, with a fixed seed so results are reproducible.
+## Results so far
 
-## Layout
+The only measured results are for the **rule-based baseline**, in [docs/results-rules.md](docs/results-rules.md): it scores 1.000 on every metric. That is expected, because the synthetic notes use a few templates, so it says little about real notes. The **LLM extractor has not been evaluated yet** (it needs an API key); run `make eval-llm` and compare. No LLM numbers are claimed.
 
-```
-src/clinical_rag_lab/
-  config.py       settings from env / .env
-  cache.py        sqlite key-value cache
-  costs.py        price table, usage log, spend cap
-  llm.py          cached chat client
-  embeddings.py   cached embedder
-  synthetic.py    corpus generator
-  questions.py    question set with gold sources
-  corpus.py       load generated data
-  generate.py     CLI: python -m clinical_rag_lab.generate
-tests/
-docs/             weekly write-ups
-prices.toml       USD per 1M tokens (verify before trusting cost figures)
-data/generated/   created by `make data`; gitignored
-```
+## Limits
+
+- Synthetic, templated notes are far easier than real clinical text.
+- The terminology table is a small stand-in for a real terminology service.
+- Matching patients by MRN is a simplification; no identity-mismatch checks yet.
+- The review step stores decisions in a local JSON file only.
 
 ## Getting started
 
 ```
 python -m venv .venv && source .venv/bin/activate
-make install
-cp .env.example .env      # then add your key and model name
-make data                 # writes data/generated/
-make test
-make lint
+make install                  # core + dev tools
+pip install -e ".[demo]"      # adds Streamlit for the demo
+cp .env.example .env          # add your key and chat model name (only needed for the LLM extractor)
+make data                     # writes data/generated/ from a fixed seed
+make test && make lint
+make eval-rules               # free baseline, writes docs/results-rules.md
+make demo                     # Streamlit app on the rules baseline (LLM mode uses your key)
+make eval-llm                 # LLM extractor on the first 20 applications; costs credits
 ```
 
-Costs: every call is cached and logged. Set `MAX_SPEND_USD` low while experimenting, and check `prices.toml` against the provider's pricing page.
+Check `prices.toml` against the provider's pricing page before trusting any cost figure.
+
+## Layout
+
+```
+src/crosscheck/
+  synthetic.py        notes generator with planted hard cases (negation, abbreviations, brands)
+  pharmacy.py         mock pharmacy source (imperfect on purpose)
+  applications.py     applications with planted errors
+  terminology.py      surface form -> canonical term
+  rules_extractor.py  free baseline extractor
+  llm_extractor.py    LLM extractor with quote grounding and retries
+  compare.py          deterministic comparison and the citation guardrail
+  pipeline.py         extract -> merge -> compare -> enforce grounding
+  oracle.py           ground truth for scoring
+  evaluate.py         extraction and flag metrics, report writer
+  demo.py             Streamlit app (demo_helpers.py holds the testable logic)
+  config.py cache.py costs.py llm.py   settings, response cache, spend cap, chat client
+tests/                no network or key needed (fake clients)
+docs/results-rules.md baseline results
+```

@@ -103,6 +103,23 @@ class Patient:
     similar_to: str | None = None
 
 
+def patient_from_dict(data: dict) -> Patient:
+    change = data.get("dose_change")
+    return Patient(
+        patient_id=data["patient_id"],
+        name=data["name"],
+        mrn=data["mrn"],
+        age=data["age"],
+        sex=data["sex"],
+        conditions=list(data["conditions"]),
+        medications=[Medication(**m) for m in data["medications"]],
+        allergies=list(data["allergies"]),
+        negated_conditions=list(data["negated_conditions"]),
+        dose_change=DoseChange(**change) if change else None,
+        similar_to=data.get("similar_to"),
+    )
+
+
 @dataclass
 class Document:
     doc_id: str

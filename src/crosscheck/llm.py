@@ -3,9 +3,9 @@
 import json
 from dataclasses import dataclass
 
-from clinical_rag_lab.cache import Cache, make_key
-from clinical_rag_lab.config import ConfigError, Settings
-from clinical_rag_lab.costs import UsageLog, cost_usd, load_prices
+from crosscheck.cache import Cache, make_key
+from crosscheck.config import ConfigError, Settings
+from crosscheck.costs import UsageLog, cost_usd, load_prices
 
 
 @dataclass
