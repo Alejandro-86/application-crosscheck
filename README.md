@@ -105,6 +105,16 @@ Findings:
 Safety defaults: the server binds to localhost, input sizes and shapes are validated, all text is rendered as text (never as HTML), and the model extractor is **off** unless the server is
 started with `ALLOW_LLM=1` (it then uses your key and counts against `MAX_SPEND_USD`). There is no authentication, so do not expose it publicly with the LLM enabled.
 
+## Regression gate
+
+Tests with fake clients prove the code runs; they do not notice quality getting worse. `python -m crosscheck.gate` does: it regenerates a fixed, seeded corpus (200 notes, 40% hard), runs the free pipeline (scraper, rules extractor, terminology, retrieval, comparison rules, grounding) and fails if any metric falls more than 0.005 below the committed baseline in [docs/gate-baseline.json](docs/gate-baseline.json) (or, for the share of text retrieval sends, rises above it). It runs in CI and as part of `make test`. Improving a number never fails; a new metric fails until the baseline is updated on purpose (`python -m crosscheck.gate --update`, reviewed in a PR).
+
+The baseline numbers are low on purpose: the rules extractor cannot read narrative letters (about 0.5 to 0.6 recall), and the gate protects that level against accidental loss, not a target.
+
+**The model has its own gate, run by hand** because CI has no API key: `make gate-llm` runs the LLM extractor on the first 100 applications of `data/generated` and compares with [docs/gate-baseline-llm.json](docs/gate-baseline-llm.json) (tolerance 0.03, since models vary). It records the model and a hash of the prompt, and says when either has changed, so a prompt edit that holds the numbers is visible as such. Run it after changing the prompt, the model or the mapping; replies are cached, so a rerun on unchanged inputs is free.
+
+What the gate does not cover: the live behaviour of a model change in CI, anything the 200-note corpus does not exercise, and the web page.
+
 ## Optional: the same check as a LangGraph workflow
 
 `src/crosscheck/graph.py` runs the check as a graph instead of a plain function. It reuses the same pipeline functions, so it returns the same flags (a test compares them over 25 applications). What the graph adds is control flow:
@@ -178,6 +188,7 @@ src/crosscheck/
   graph.py            optional LangGraph version with a human-review pause (needs the graph extra)
   oracle.py           ground truth for scoring
   evaluate.py         extraction and flag metrics, report writer
+  gate.py             regression gate: fail if metrics drop below the committed baseline
   demo.py             Streamlit app (demo_helpers.py holds the testable logic)
   api.py, web/        FastAPI app and the static page
   config.py cache.py costs.py llm.py   settings, response cache, spend cap, chat client
