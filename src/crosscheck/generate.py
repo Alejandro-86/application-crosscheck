@@ -31,8 +31,8 @@ def write_forms(applications, patients, out: Path, seed: int) -> None:
         (forms_dir / f"{app.app_id}.txt").write_text(text, encoding="utf-8")
 
 
-def generate_all(out: Path, n_docs: int = 200, seed: int = 42) -> str:
-    patients, documents = generate_corpus(n_docs, seed)
+def generate_all(out: Path, n_docs: int = 200, seed: int = 42, hard_fraction: float = 0.0) -> str:
+    patients, documents = generate_corpus(n_docs, seed, hard_fraction)
     write_corpus(patients, documents, out)
     pharmacy = generate_pharmacy(patients, seed)
     applications = generate_applications(patients, documents, pharmacy, seed)
@@ -51,9 +51,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate the synthetic corpus and sources.")
     parser.add_argument("--n-docs", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--hard-fraction",
+        type=float,
+        default=0.0,
+        help="share of notes rewritten as narrative letters with traps (0 to 1)",
+    )
     parser.add_argument("--out", type=Path, default=Path("data/generated"))
     args = parser.parse_args()
-    print(generate_all(args.out, args.n_docs, args.seed))
+    print(generate_all(args.out, args.n_docs, args.seed, args.hard_fraction))
 
 
 if __name__ == "__main__":

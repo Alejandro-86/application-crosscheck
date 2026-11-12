@@ -83,6 +83,7 @@ class EvalReport:
     retrieval: str = "all text"
     chars_total: int = 0
     chars_sent: int = 0
+    by_case: dict[str, PRF] = field(default_factory=dict)
     scraper_exact: int = 0
     scraper_total: int = 0
     false_positives: list[tuple[str, tuple[str, str]]] = field(default_factory=list)
@@ -209,6 +210,8 @@ def _score_extraction(report: EvalReport, patient, docs: list[LoadedDocument], r
         got = {(f.kind, f.value, f.dose) for f in result.facts}
         for kind, prf in report.extraction.items():
             prf.add({g for g in got if g[0] == kind}, {t for t in truth if t[0] == kind})
+        for case in doc.hard_cases or ["(none)"]:
+            report.by_case.setdefault(case, PRF()).add(got, truth)
 
 
 def _fmt(value: float | None) -> str:
@@ -228,7 +231,9 @@ def format_sweep(reports: list[EvalReport]) -> str:
         "passed to the extractor (a proxy for model tokens). The random-control rows rank passages "
         "by chance, so they show what retrieval has to beat. The topic queries and the notes' "
         "line structure are friendly to this retrieval, and every note of a patient repeats the "
-        "same facts, so treat the recall as an upper bound.",
+        "same facts, so treat the recall as an upper bound. If the data includes narrative "
+        "letters, this rules extractor cannot read them with or without retrieval, so any "
+        "retrieval loss on them is hidden: run `--extractor llm --retrieval rag` to see it.",
         "",
         "| Extractor input | Text sent | Flag precision | Flag recall | Flag F1 | Missed flags |",
         "|---|---|---|---|---|---|",
@@ -271,6 +276,18 @@ def format_report(report: EvalReport) -> str:
         lines.append(
             f"| {kind} | {prf.tp} | {prf.fp} | {prf.fn} | {_fmt(prf.precision)} | "
             f"{_fmt(prf.recall)} | {_fmt(prf.f1)} |"
+        )
+    lines += [
+        "",
+        "## Extraction by kind of note (a note counts under every hard case it contains)",
+        "",
+        "| Hard case | TP | FP | FN | Precision | Recall |",
+        "|---|---|---|---|---|---|",
+    ]
+    for case, prf in sorted(report.by_case.items()):
+        lines.append(
+            f"| {case} | {prf.tp} | {prf.fp} | {prf.fn} | {_fmt(prf.precision)} | "
+            f"{_fmt(prf.recall)} |"
         )
     lines += [
         "",

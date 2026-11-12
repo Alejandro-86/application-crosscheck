@@ -223,3 +223,5 @@ details summary { cursor: pointer; color: var(--muted); margin: .8rem 0 .3rem; }
 .meter > span { display: block; height: 100%; background: var(--accent); }
 #top-k-label input { width: 3.6rem; padding: .3rem .4rem; margin: 0; }
 #top-k-label[hidden] { display: none !important; }
+
+.app-list .more { padding: .35rem .6rem .5rem; }
