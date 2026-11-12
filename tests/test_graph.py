@@ -160,3 +160,39 @@ def test_medication_flags_route_the_same_way():
     outcome = CheckWorkflow().start(ctx_for(application, [doc()]), "med")
     assert outcome.status == "awaiting_review"
     assert {f["type"] for f in outcome.state["flags"]} == {"unverified_medication"}
+
+
+def test_notes_that_yield_no_facts_are_never_waved_through_as_clear():
+    unreadable = "Unrelated letter about parking.\nKind regards.\n"
+    outcome = CheckWorkflow().start(
+        ctx_for(app(conditions=(), allergies=()), [doc(unreadable)]), "unread-notes"
+    )
+    assert outcome.state["flags"] == [] and outcome.state["unmapped"] == []
+    assert outcome.state["facts_read"] == 0 and outcome.state["notes_available"] == 1
+    assert outcome.status == "awaiting_review"
+    assert outcome.review_request["reasons"] == ["no_facts_read"]
+
+
+def test_no_notes_at_all_is_not_a_coverage_failure():
+    outcome = CheckWorkflow().start(ctx_for(app(conditions=(), allergies=()), []), "no-notes")
+    assert outcome.status == "auto_clear" and outcome.state["review_reasons"] == []
+
+
+def test_review_reasons_are_all_listed_and_the_request_carries_them():
+    text = NOTE.replace("Assessment: asthma.", "Assessment: asthma; flarbitis.")
+    outcome = CheckWorkflow().start(ctx_for(app(conditions=(), allergies=()), [doc(text)]), "all")
+    assert outcome.review_request["reasons"] == ["flags", "unmapped_terms"]
+
+
+def test_retrieval_that_finds_nothing_in_existing_notes_goes_to_review():
+    embedder = HashingEmbedder()
+    docs = [doc("Zzzz qqqq.\n")]  # no word the queries share
+    ctx = ctx_for(app(conditions=(), allergies=()), docs, embedder=embedder, k=1)
+    outcome = CheckWorkflow().start(ctx, "nothing-retrieved")
+    assert outcome.state["facts_read"] == 0
+    assert outcome.review_request["reasons"] == ["no_facts_read"]
+
+
+def test_a_normally_read_application_still_clears():
+    outcome = CheckWorkflow().start(ctx_for(app(), [doc()]), "ok")
+    assert outcome.status == "auto_clear" and outcome.state["facts_read"] > 0

@@ -109,11 +109,11 @@ START -> [retrieve] -> extract -> compare -> route -+-> human_review (pauses) ->
 ```
 
 - **Conditional entry:** the `retrieve` step only runs when an embedder is supplied.
-- **Routing rule:** an application goes to review if it has flags *or* its notes contained terms the system could not read, so an unreadable note is never waved through as clear.
+- **Routing rule with reasons:** an application goes to review if it has flags, *or* its notes contained terms the system could not map (`unmapped_terms`), *or* notes exist but the extractor read no facts from any of them (`no_facts_read`). The reviewer sees which reasons applied. "Clear" therefore means the sources were read and agree, never just "nothing was found". On 150 generated applications with the rules extractor, 55 of the 122 reviews were `flags` + `no_facts_read`: the rules extractor cannot read narrative letters.
 - **A real pause:** `human_review` interrupts and the state is checkpointed; the run resumes with the reviewer's decisions without repeating the extraction (a test counts extractor calls). Decisions are validated against the flags that were shown.
 - **Checkpointed state stays small:** the extractor, embedder and documents travel in the run config, not in the state.
 
-Try it: `pip install -e ".[graph]"` then `python -m crosscheck.graph A0001 --rag --decide Confirm`.
+Try it (inside the project venv: `python -m venv .venv && . .venv/bin/activate && pip install -e ".[dev,graph]"`): `python -m crosscheck.graph A0001 --rag --decide Confirm`.
 
 It is not wired into the web app or the evaluation, and it uses an in-memory checkpointer, so a paused run does not survive a restart. For a fixed linear flow the plain function is simpler; the graph earns its place once review, routing or resumable state matter.
 
